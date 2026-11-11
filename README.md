@@ -10,6 +10,12 @@ A local command-line utility for exporting rendered HTML tables from the SMP sch
 - Table captions/nearby headings, headers, rows, source URLs, and capture contexts for auditing.
 - Header `rowspan`/`colspan` layout and key/value tables without a `<thead>`.
 
+Pagination is read from each table's own pager and its "Showing 1 to 5 of 18
+entries" line. The tool first asks DataTables to show **all** rows through its
+length selector; if that is unavailable it walks the numbered pages. Every table
+records how many rows the portal reported, so a short capture cannot pass as
+complete.
+
 It does **not** follow unrelated links or other portal modules, and it does not scan tables inside iframes. It does not bypass authentication, CAPTCHA, rate limits, or other access controls. It extracts HTML tables, not data rendered only as charts or non-table UI widgets. The tab and pagination handling is deliberately heuristic; reconcile the first run's counts with the portal before using the export for official reporting.
 
 ## Install
@@ -52,7 +58,7 @@ Useful options:
 --output-dir PATH   Parent directory for timestamped bundles (default: exports)
 --delay SECONDS     Delay between school pages (default: 1.5)
 --timeout SECONDS   Navigation timeout (default: 45)
---max-pages N       Maximum page advances per table view (default: 100)
+--max-pages N       Maximum page advances per table (default: 100)
 --headless          Hide the Chromium window
 --non-interactive   Read SMP_USERNAME and SMP_PASSWORD from the environment; never prompt
 ```
@@ -66,6 +72,14 @@ Each run creates a timestamped folder under `exports/` containing:
 - `smp_tables.xlsx` — a `Summary` worksheet and one worksheet per captured table.
 - `csv/` — one CSV file per table, encoded as UTF-8 with BOM for spreadsheet compatibility.
 - `run_manifest.json` — requested codes, status, row/table counts, headers, source URLs, capture contexts, and warnings; it does not contain table values or credentials. Credential-like URL query parameters are redacted in provenance metadata.
+
+Each table also records completeness: `rows captured`, `rows expected (portal)`,
+`rows missing`, and `pages captured / expected`. A school whose tables did not
+reach the portal's own row totals is reported with status **`incomplete`** rather
+than `ok`, prints a warning, and makes the CLI exit non-zero — so an incomplete
+export is never mistaken for a finished one. The same fields appear in
+`run_manifest.json` (`rows_expected`, `rows_missing`, `complete`,
+`pages_captured`, `pages_expected`, `pager_kind`).
 
 The workbook writes portal values as explicit text cells, preserving leading zeros and preventing values from being interpreted as Excel formulas. CSV has no cell types, so formula-like values are prefixed with an apostrophe to reduce spreadsheet formula-injection risk; use the workbook when exact displayed values are required. No HTML snapshots, screenshots, or browser storage state are saved.
 
@@ -143,6 +157,16 @@ fail the job with a clear message and commit nothing.
 
 ```bash
 python -m unittest discover -s tests -v
+```
+
+Some tests execute the collector's browser JavaScript against
+`tests/fixtures/portal_datatable.html` (markup captured from the portal) using
+Node and jsdom, which is what keeps the pager logic honest without signing in. If
+`node` or jsdom is unavailable those cases skip; everything else still runs.
+
+```bash
+# optional: enable the DOM-backed pager tests
+npm install jsdom        # or place jsdom in /tmp/jsdom/node_modules
 ```
 
 The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots), safe Excel/CSV export, CLI code-scope validation, and the export publisher used by the GitHub Actions worker (staging, index, pruning). A further set of static checks loads the workflow files and rejects expressions GitHub cannot evaluate where they are placed (for example `runner.*` inside a job's `env:`, which otherwise makes the whole workflow file invalid). They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.

@@ -115,7 +115,18 @@ jobs:
             ARGS+=(--codes "${CODES[@]}")
           fi
           printf 'Running: python -m smp_extractor %s\n' "${ARGS[*]}"
+          # Exit code 1 means at least one school was not fully captured. Keep the
+          # bundle (it still gets published and uploaded) but fail the job so a
+          # partial export can never look green.
+          set +e
           python -m smp_extractor "${ARGS[@]}"
+          STATUS=$?
+          set -e
+          if [ "${STATUS}" -ne 0 ]; then
+            echo "::warning::The extractor reported incomplete or failed schools (exit ${STATUS}). Review the manifest's completeness columns."
+            echo "EXTRACT_INCOMPLETE=1" >> "$GITHUB_ENV"
+          fi
+          exit 0
         # --headless is always passed: the runner has no display, and the input
         # toggle only exists so a self-hosted runner can watch the browser.
 
@@ -151,6 +162,16 @@ jobs:
             sleep 3
           done
           echo "::error::Could not push the export. Check branch protection rules for this branch."
+          exit 1
+
+      - name: Fail the run if any school was incomplete
+        if: ${{ success() && env.EXTRACT_INCOMPLETE == '1' }}
+        run: |
+          echo "### Export published, but incomplete" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "At least one table captured fewer rows than the portal reported." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Check the \`Rows missing\` column in the Summary sheet, or each table's" >> "${GITHUB_STEP_SUMMARY}"
+          echo "\`rows_expected\` / \`rows_missing\` fields in run_manifest.json." >> "${GITHUB_STEP_SUMMARY}"
           exit 1
 
       - name: Upload the bundle as an artifact

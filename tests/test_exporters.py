@@ -93,6 +93,68 @@ class ExporterTests(unittest.TestCase):
             manifest = json.loads((output_dir / "run_manifest.json").read_text())
             self.assertEqual(manifest["results"][0]["table_count"], 0)
 
+    def test_summary_reports_completeness_against_the_portal_totals(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            complete = ExtractedTable(
+                emis_code="32230155",
+                table_index=0,
+                table_ref="DataTables_Table_0",
+                title="CONSUMPTION",
+                headers=["Sr#", "Date"],
+                rows=[["1", "04-11-2026"], ["2", "03-11-2026"]],
+                rows_expected=2,
+                pages_captured=2,
+                pages_expected=4,
+                pager_kind="numbered-pages",
+            )
+            short = ExtractedTable(
+                emis_code="32230155",
+                table_index=1,
+                table_ref="DataTables_Table_1",
+                title="INVENTORY",
+                headers=["Sr#", "Date"],
+                rows=[["1", "04-11-2026"]],
+                rows_expected=18,
+            )
+            result = SchoolResult(
+                emis_code="32230155",
+                url="https://smp26.pesrp.edu.pk/school-detail/32230155",
+                status="incomplete",
+                warnings=["Incomplete table capture: INVENTORY (1 of 18 rows)."],
+                tables=[complete, short],
+            )
+
+            output_dir = write_export_bundle(
+                [result], "https://smp26.pesrp.edu.pk", Path(temp_dir) / "exports"
+            )
+
+            workbook = load_workbook(output_dir / "smp_tables.xlsx", data_only=True)
+            summary = workbook["Summary"]
+            headers = [cell.value for cell in summary[1]]
+            self.assertIn("Rows expected (portal)", headers)
+            self.assertIn("Rows missing", headers)
+
+            rows = {
+                summary.cell(row, 5).value: {
+                    "captured": summary.cell(row, 6).value,
+                    "expected": summary.cell(row, 7).value,
+                    "missing": summary.cell(row, 8).value,
+                    "pages": summary.cell(row, 9).value,
+                }
+                for row in (2, 3)
+            }
+            self.assertEqual(rows["CONSUMPTION"]["missing"], 0)
+            self.assertEqual(rows["CONSUMPTION"]["pages"], "2 / 4")
+            self.assertEqual(rows["INVENTORY"]["captured"], 1)
+            self.assertEqual(rows["INVENTORY"]["expected"], 18)
+            self.assertEqual(rows["INVENTORY"]["missing"], 17)
+
+            manifest = json.loads((output_dir / "run_manifest.json").read_text())
+            table = manifest["results"][0]["tables"][1]
+            self.assertFalse(table["complete"])
+            self.assertEqual(table["rows_missing"], 17)
+            self.assertEqual(manifest["results"][0]["incomplete_table_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
