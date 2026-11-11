@@ -64,19 +64,46 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install the Sheets client
-        # Pinned in requirements.txt; this job does not need Playwright.
+      - name: Install dependencies for the tests and the Sheets client
+        # The unit-test step runs the *whole* suite, which imports openpyxl for
+        # the exporter tests. Installing only the Google packages made
+        # `unittest discover` fail to import tests/test_exporters.py (and
+        # test_cli.py through it), so this job went red before it ever reached
+        # the sheet. Playwright is the one runtime dependency these tests never
+        # touch, so it is deliberately left out; the browser cases skip.
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
+            "openpyxl>=3.1,<4" \
             "google-api-python-client>=2.100,<3" \
             "google-auth>=2.20,<3"
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+        # Failing tests are echoed as annotations: the raw job log is not always
+        # retrievable from the API, and a bare "exit code 1" hides which test
+        # broke. Only FAIL/ERROR lines are surfaced, never the whole output.
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "${STATUS}" -ne 0 ]; then
+            grep -E "^(FAIL|ERROR):" "$RUNNER_TEMP/tests.log" | head -10 \
+              | while IFS= read -r line; do echo "::error title=Unit tests::${line}"; done
+            grep -E "^(ModuleNotFoundError|ImportError|AssertionError|[A-Za-z]*Error):" \
+              "$RUNNER_TEMP/tests.log" | sort -u | head -10 \
+              | while IFS= read -r line; do echo "::error title=Unit tests::${line}"; done
+            exit 1
+          fi
 
       - name: Check the sheet secrets are configured
         if: ${{ inputs.dry_run != true }}
+        # A secret must be mapped into the step's env to exist as a variable.
+        # This step used to test ${GOOGLE_SERVICE_ACCOUNT_JSON} without mapping
+        # it, so it always saw an empty string and failed even when the secret
+        # was present. Keep this env block in step with the one below.
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           if [ -z "${SMP_SHEET_ID}" ]; then
             echo "::error::Add the SMP_SHEET_ID repository secret (the workbook id)."
