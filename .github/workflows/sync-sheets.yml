@@ -79,7 +79,22 @@ jobs:
             "google-auth>=2.20,<3"
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+        # Failing tests are echoed as annotations: the raw job log is not always
+        # retrievable from the API, and a bare "exit code 1" hides which test
+        # broke. Only FAIL/ERROR lines are surfaced, never the whole output.
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "${STATUS}" -ne 0 ]; then
+            grep -E "^(FAIL|ERROR):" "$RUNNER_TEMP/tests.log" | head -10 \
+              | while IFS= read -r line; do echo "::error title=Unit tests::${line}"; done
+            grep -E "^(ModuleNotFoundError|ImportError|AssertionError|[A-Za-z]*Error):" \
+              "$RUNNER_TEMP/tests.log" | sort -u | head -10 \
+              | while IFS= read -r line; do echo "::error title=Unit tests::${line}"; done
+            exit 1
+          fi
 
       - name: Check the sheet secrets are configured
         if: ${{ inputs.dry_run != true }}
