@@ -69,10 +69,72 @@ Each run creates a timestamped folder under `exports/` containing:
 
 The workbook writes portal values as explicit text cells, preserving leading zeros and preventing values from being interpreted as Excel formulas. CSV has no cell types, so formula-like values are prefixed with an apostrophe to reduce spreadsheet formula-injection risk; use the workbook when exact displayed values are required. No HTML snapshots, screenshots, or browser storage state are saved.
 
+## Run it in GitHub Actions
+
+The repository ships a worker workflow, `.github/workflows/smp-extract.yml`, so the
+extraction can run on GitHub and keep the data in the repository itself — no local
+Python or Chromium install needed.
+
+### One-time setup
+
+1. Add repository secrets **`SMP_USERNAME`** and **`SMP_PASSWORD`** under
+   *Settings → Secrets and variables → Actions*. The workflow refuses to run without them.
+2. Make sure Actions is allowed to push: *Settings → Actions → General → Workflow
+   permissions* must allow **Read and write permissions** (the workflow also declares
+   `permissions: contents: write`).
+3. If the branch is protected, allow the `github-actions[bot]` identity to push, or
+   run the workflow from an unprotected branch. Without push rights the export still
+   uploads as a run artifact, but is not committed.
+4. **Keep the repository private.** Committed exports contain real school data.
+
+### Run it
+
+*Actions → SMP table extract → Run workflow*. Optional inputs:
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `codes` | all six | Space/comma-separated subset of the configured EMIS codes |
+| `delay` | `2.0` | Seconds between school pages |
+| `max_pages` | `100` | Pagination safety cap per table view |
+| `keep_last` | `30` | How many bundles to retain in the repository |
+| `publish` | `true` | Commit the bundle back to the branch |
+
+A weekly `schedule` trigger (Mondays 03:00 UTC) is included; edit the `cron` line or
+delete the block if you only want on-demand runs. Concurrent runs on the same branch
+are serialised by a `concurrency` group, so two runs never race on the commit.
+
+### What the worker does
+
+1. Installs dependencies and Chromium, and runs the unit tests.
+2. Runs `python -m smp_extractor --non-interactive --headless --output-dir <runner temp>`.
+   The browser always runs headless on a runner; the `headless` input only matters on a
+   self-hosted runner with a display.
+3. `scripts/publish_exports.py` copies the newest bundle to `data/exports/<run_id>/`,
+   appends it to `data/exports/index.json` (status and row/table totals only, no table
+   values), and prunes bundles beyond `keep_last`.
+4. Commits `data/exports` and pushes to the branch the run started from.
+5. Uploads the bundle as a workflow artifact (kept 30 days) on every run, including
+   failures, and writes a per-school summary table to the run's summary page.
+
+```text
+data/exports/
+├── index.json                     # newest-first run index
+└── 20261111_090000/               # one bundle per run
+    ├── smp_tables.xlsx
+    ├── run_manifest.json
+    └── csv/...
+```
+
+`data/exports` is committed; `exports/` (local CLI output) stays git-ignored.
+Failures — missing secrets, an expired account, a changed login form, or HTTP 429 —
+fail the job with a clear message and commit nothing.
+
+`.github/workflows/checks.yml` runs the unit tests on every push and pull request.
+
 ## Security and operating notes
 
 - Use this only for schools and records you are authorized to access and export under your organization’s policy.
-- The export can contain sensitive education data. Keep the output directory access-controlled, do not upload it to unapproved services, and delete it when no longer needed.
+- The export can contain sensitive education data. Keep the output directory access-controlled, do not upload it to unapproved services, and delete it when no longer needed. This applies equally to `data/exports` when the workflow commits bundles into the repository: a public repository would publish the data.
 - Credentials are held only in memory for the run and are not written to output files. The browser session is closed when the run ends.
 - The utility waits between schools, uses modest waits while paging, and stops if the portal returns HTTP 429. Do not lower the delay to evade portal protections.
 - If the portal changes its login form or table controls, the run will report errors/warnings rather than attempting to defeat access controls.
@@ -83,4 +145,4 @@ The workbook writes portal values as explicit text cells, preserving leading zer
 python -m unittest discover -s tests -v
 ```
 
-The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots) and safe Excel/CSV export. They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.
+The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots), safe Excel/CSV export, CLI code-scope validation, and the export publisher used by the GitHub Actions worker (staging, index, pruning). They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.

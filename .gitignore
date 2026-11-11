@@ -5,5 +5,5 @@ venv/
 .env
 .env.*
 !.env.example
-exports/
+/exports/
 *.log

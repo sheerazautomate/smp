@@ -1,0 +1,167 @@
+name: SMP table extract
+
+# Run from the Actions tab ("Run workflow"), or automatically on a schedule.
+# The export is written into data/exports/ and committed back to the branch the
+# workflow runs from, so the data lives in the repository.
+on:
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: >-
+          EMIS codes to capture, separated by spaces or commas. Leave blank for
+          all six configured codes.
+        required: false
+        default: ""
+        type: string
+      delay:
+        description: Seconds to wait between school pages.
+        required: false
+        default: "2.0"
+        type: string
+      max_pages:
+        description: Maximum pagination advances per table view.
+        required: false
+        default: "100"
+        type: string
+      headless:
+        description: Hide the Chromium window (keep false only for local debugging).
+        required: false
+        default: false
+        type: boolean
+      keep_last:
+        description: How many export bundles to keep in the repository.
+        required: false
+        default: "30"
+        type: string
+      publish:
+        description: Commit the export bundle back to this branch.
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # Weekly refresh, Mondays 03:00 UTC. Adjust or remove as needed.
+    - cron: "0 3 * * 1"
+
+# Never let two runs write to the repository at the same time.
+concurrency:
+  group: smp-extract-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    name: Extract school tables
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Repository secrets. The tool runs with --non-interactive and only reads
+      # these from the environment; nothing is written to the export or logs.
+      SMP_USERNAME: ${{ secrets.SMP_USERNAME }}
+      SMP_PASSWORD: ${{ secrets.SMP_PASSWORD }}
+      CODES_INPUT: ${{ inputs.codes }}
+      DELAY_INPUT: ${{ inputs.delay || '2.0' }}
+      MAX_PAGES_INPUT: ${{ inputs.max_pages || '100' }}
+      KEEP_LAST_INPUT: ${{ inputs.keep_last || '30' }}
+      STAGING_DIR: ${{ runner.temp }}/smp-exports
+      PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # Push back to the same branch this workflow ran from.
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check credentials are configured
+        run: |
+          if [ -z "${SMP_USERNAME}" ] || [ -z "${SMP_PASSWORD}" ]; then
+            echo "::error::Add the SMP_USERNAME and SMP_PASSWORD repository secrets before running this workflow."
+            exit 1
+          fi
+
+      - name: Extract tables
+        run: |
+          mapfile -t CODES < <(
+            printf '%s\n' "${CODES_INPUT}" \
+              | tr -s '[:space:],' '\n' \
+              | sed '/^$/d'
+          )
+          ARGS=(--non-interactive --headless --output-dir "${STAGING_DIR}" \
+                --delay "${DELAY_INPUT}" --max-pages "${MAX_PAGES_INPUT}")
+          if [ "${#CODES[@]}" -gt 0 ]; then
+            ARGS+=(--codes "${CODES[@]}")
+          fi
+          printf 'Running: python -m smp_extractor %s\n' "${ARGS[*]}"
+          python -m smp_extractor "${ARGS[@]}"
+        # --headless is always passed: the runner has no display, and the input
+        # toggle only exists so a self-hosted runner can watch the browser.
+
+      - name: Publish the bundle into data/exports
+        if: ${{ success() && env.PUBLISH == 'true' }}
+        run: |
+          python scripts/publish_exports.py \
+            --source-dir "${STAGING_DIR}" \
+            --data-root data/exports \
+            --keep-last "${KEEP_LAST_INPUT}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --summary-file "${GITHUB_STEP_SUMMARY}"
+
+      - name: Commit and push the export
+        if: ${{ success() && env.PUBLISH == 'true' }}
+        run: |
+          git config user.name "smp-extractor[bot]"
+          git config user.email "smp-extractor@users.noreply.github.com"
+          git add -A data/exports
+          if git diff --cached --quiet; then
+            echo "::notice::No export changes to commit."
+            exit 0
+          fi
+          RUN_ID="$(ls -1 data/exports | grep -E '^[0-9]{8}_[0-9]{6}' | sort | tail -n 1)"
+          git commit -m "data: SMP export ${RUN_ID:-manual}"
+          # Another commit may have landed while the browser ran; retry briefly.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "::notice::Pushed export ${RUN_ID} to ${GITHUB_REF_NAME}."
+              exit 0
+            fi
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            sleep 3
+          done
+          echo "::error::Could not push the export. Check branch protection rules for this branch."
+          exit 1
+
+      - name: Upload the bundle as an artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-export-${{ github.run_id }}
+          path: ${{ env.STAGING_DIR }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Report a failed extraction
+        if: ${{ failure() }}
+        run: |
+          echo "### SMP extraction failed" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Check the *Extract tables* step log. Nothing was committed." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Common causes: missing secrets, an expired account, a changed login form, or portal rate limiting." >> "${GITHUB_STEP_SUMMARY}"
