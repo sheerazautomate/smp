@@ -153,6 +153,13 @@ class WorkflowFileTests(unittest.TestCase):
     def test_dependency_install_goes_through_the_cache_aware_script(self):
         for path in self.files:
             text = path.read_text(encoding="utf-8")
+            # The Sheets sync job installs two pure-Python packages and never
+            # launches a browser, so it has no browser cache to populate.
+            if "sync_sheets.py" in text:
+                with self.subTest(path=path.name):
+                    self.assertNotIn("playwright", text)
+                    self.assertNotIn("pip install -r requirements.txt", text)
+                continue
             with self.subTest(path=path.name):
                 self.assertIn("scripts/setup_workflow_env.py", text)
                 # A bare pip install would bypass the cache logic.
@@ -209,6 +216,57 @@ class WorkflowFileTests(unittest.TestCase):
                 self.assertIsNone(leaks.search(stripped), f"credentials echoed: {stripped}")
         self.assertNotIn("env |", text)
         self.assertNotIn("printenv", text)
+
+    # ------------------------------------------------------------------ #
+    # The Google Sheets sync workflow
+    # ------------------------------------------------------------------ #
+
+    def _sync_text(self) -> str:
+        return (WORKFLOW_DIR / "sync-sheets.yml").read_text(encoding="utf-8")
+
+    def test_sync_workflow_exists_and_runs_after_extraction(self):
+        text = self._sync_text()
+        self.assertIn('workflows: ["SMP table extract"]', text)
+        self.assertIn("workflow_run", text)
+        # workflow_run ignores github.ref_name for the upstream branch.
+        self.assertIn("github.event.workflow_run.head_branch", text)
+
+    def test_sync_only_runs_after_a_successful_extraction(self):
+        text = self._sync_text()
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", text)
+
+    def test_sync_reads_the_sheet_configuration_from_secrets(self):
+        text = self._sync_text()
+        self.assertIn("SMP_SHEET_ID: ${{ secrets.SMP_SHEET_ID }}", text)
+        self.assertIn(
+            "GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}",
+            text,
+        )
+
+    def test_sync_never_echoes_the_service_account_key(self):
+        text = self._sync_text()
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("echo", "printf", "set -x")):
+                self.assertNotIn(
+                    "$GOOGLE_SERVICE_ACCOUNT_JSON}",
+                    stripped.replace("${GOOGLE_SERVICE_ACCOUNT_JSON}", ""),
+                    f"service-account key echoed: {stripped}",
+                )
+                self.assertNotIn('cat "$KEY_PATH"', stripped)
+        self.assertNotIn("env |", text)
+        self.assertNotIn("printenv", text)
+
+    def test_sync_key_file_lives_outside_the_workspace_and_is_removed(self):
+        text = self._sync_text()
+        self.assertIn("$RUNNER_TEMP/smp-sheets-key.json", text)
+        self.assertIn("always()", text)
+        self.assertIn("rm -f", text)
+
+    def test_sync_workflow_never_touches_the_raw_tabs(self):
+        text = self._sync_text()
+        self.assertNotIn("RAW Milk", text.replace("RAW Milk and Raw Biscuits are never written", ""))
+        self.assertNotIn("Raw Biscuits", text.replace("RAW Milk and Raw Biscuits are never written", ""))
 
 
 if __name__ == "__main__":

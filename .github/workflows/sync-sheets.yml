@@ -1,0 +1,122 @@
+name: SMP sync to Google Sheets
+
+# Fills the five derived tabs of the master workbook from a published export
+# bundle. Runs automatically after a scheduled extraction, or on demand once
+# the secrets below are configured.
+#
+# Required repository secrets:
+#   SMP_SHEET_ID          the workbook id (the long id in its URL)
+#   GOOGLE_SERVICE_ACCOUNT_JSON  the service-account key, verbatim JSON
+# The service account's client_email must be shared on the workbook with the
+# Editor role, or every write fails with a 403.
+#
+# RAW Milk and Raw Biscuits are never written by this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: >-
+          Export bundle to sync, as a directory name under data/exports.
+          Leave blank for the newest bundle on the branch.
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: Print the planned ranges without writing to the sheet.
+        required: false
+        default: false
+        type: boolean
+  workflow_run:
+    # Chain off the extraction job so a Sunday-night extraction lands in the
+    # sheet without anyone pressing a button.
+    workflows: ["SMP table extract"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: smp-sync-sheets
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync export to the master sheet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only sync a successful extraction (or a manual run, which has no upstream).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    env:
+      SMP_SHEET_ID: ${{ secrets.SMP_SHEET_ID }}
+      BUNDLE_INPUT: ${{ inputs.bundle }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Check out the branch holding the export
+        uses: actions/checkout@v5
+        with:
+          # workflow_run cannot use github.ref_name; it must name the branch.
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install the Sheets client
+        # Pinned in requirements.txt; this job does not need Playwright.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "google-api-python-client>=2.100,<3" \
+            "google-auth>=2.20,<3"
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check the sheet secrets are configured
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          if [ -z "${SMP_SHEET_ID}" ]; then
+            echo "::error::Add the SMP_SHEET_ID repository secret (the workbook id)."
+            exit 1
+          fi
+          if [ -z "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "::error::Add the GOOGLE_SERVICE_ACCOUNT_JSON repository secret."
+            exit 1
+          fi
+
+      - name: Write the service-account key to a temporary file
+        if: ${{ inputs.dry_run != true }}
+        # Written outside the workspace and removed at the end of the job; the
+        # key is never printed, echoed, or committed.
+        run: |
+          KEY_PATH="$RUNNER_TEMP/smp-sheets-key.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$KEY_PATH" >> "$GITHUB_ENV"
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+      - name: Sync the bundle into the workbook
+        run: |
+          ARGS=(--json)
+          if [ -n "${BUNDLE_INPUT}" ]; then
+            ARGS+=(--bundle "data/exports/${BUNDLE_INPUT}")
+          fi
+          if [ "${DRY_RUN}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          python scripts/sync_sheets.py "${ARGS[@]}" | tee sync-report.json
+          {
+            echo "### Google Sheets sync"
+            echo ""
+            echo '```json'
+            cat sync-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the key file
+        if: ${{ always() }}
+        run: rm -f "${RUNNER_TEMP}/smp-sheets-key.json"
