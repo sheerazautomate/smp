@@ -20,7 +20,7 @@ class FakeValues:
         self._calls = calls
 
     def update(self, spreadsheetId, range, valueInputOption, body):
-        self._calls.append(("update", spreadsheetId, range, body))
+        self._calls.append(("update", spreadsheetId, range, body, valueInputOption))
         return FakeRequest({"updatedCells": sum(len(row) for row in body["values"])})
 
     def clear(self, spreadsheetId, range, body):
@@ -91,12 +91,25 @@ class SyncWriteTests(unittest.TestCase):
         self.assertFalse(any("RAW" in r or "Raw" in r for r in ranges))
         self.assertGreater(result.updated_cells, 0)
 
+    def test_writes_are_user_entered_so_numbers_stay_numbers(self):
+        """RAW stores "123" as text, and SUM silently ignores text.
+
+        A manual enrollment fix done with RAW collapsed every enrollment total
+        to 0 while the cells still looked correct. USER_ENTERED lets Sheets
+        parse the value, so the formulas keep working.
+        """
+        service = FakeService()
+        sync_sheets.write_rows(service, "sheet-id", self._writes())
+        self.assertTrue(service.calls)
+        for call in service.calls:
+            self.assertEqual(call[4], "USER_ENTERED", f"{call[2]} would be stored as text")
+
     def test_requests_use_the_exact_grid_of_their_values(self):
         service = FakeService()
         writes = self._writes()
         sync_sheets.write_rows(service, "sheet-id", writes)
         for call, write in zip(service.calls, writes):
-            _, _, a1, body = call
+            _, _, a1, body, _ = call
             self.assertEqual(a1, write.a1_range)
             self.assertEqual(body["values"], write.values)
             rows = len(body["values"])

@@ -133,6 +133,18 @@ class SchoolTables:
     milk_consumption: dict[_dt.date, int] = field(default_factory=dict)
     biscuit_consumption: dict[_dt.date, int] = field(default_factory=dict)
 
+    @property
+    def enrollment(self) -> int:
+        """The figure the workbook reports: the portal's latest enrollment.
+
+        Every tab and the Summary read this one value. They previously mixed
+        the two portal columns -- Received tabs wrote the initial (2026-09-25)
+        count while Consumption wrote the latest -- so the workbook disagreed
+        with itself, and the Summary's sufficiency ratio was computed off a
+        different number than the one printed beside it.
+        """
+        return self.enrollment_latest or self.enrollment_initial
+
     def milk_receipts(self) -> list[tuple[_dt.date, int]]:
         return sorted(
             ((day, qty) for day, qty, kind in self.receipts if _is_milk(kind))
@@ -336,7 +348,6 @@ def _received_write(
     spec: TabSpec,
     schools: Sequence[SchoolTables],
     pick,
-    total_enrollment: bool,
 ) -> SheetWrite:
     receipts = {school.emis: pick(school) for school in schools}
     slots = max((len(value) for value in receipts.values()), default=0)
@@ -361,7 +372,7 @@ def _received_write(
             "MARHAN - MALE",
             school.emis,
             school_name(school.emis),
-            str(school.enrollment_initial if total_enrollment else school.enrollment_latest),
+            str(school.enrollment),
         ]
         row += [""] * (2 * slots)
         for index, (day, quantity) in enumerate(receipts[school.emis]):
@@ -383,7 +394,7 @@ def _received_write(
                 "MARHAN - MALE",
                 school.emis,
                 school_name(school.emis),
-                str(school.enrollment_initial if total_enrollment else school.enrollment_latest),
+                str(school.enrollment),
                 formula,
             ]
         )
@@ -414,7 +425,7 @@ def _consumption_write(
                 "MARHAN - MALE",
                 school.emis,
                 school_name(school.emis),
-                str(school.enrollment_initial),
+                str(school.enrollment),
             ]
             + [str(per_school[school.emis][day]) if day in per_school[school.emis] else "" for day in days]
         )
@@ -447,9 +458,9 @@ def build_writes(schools: Sequence[SchoolTables]) -> list[SheetWrite]:
             f"{len(ordered)} schools"
         )
     writes = [
-        _received_write(SHEET_SPECS["milk_received"], ordered, SchoolTables.milk_receipts, True),
+        _received_write(SHEET_SPECS["milk_received"], ordered, SchoolTables.milk_receipts),
         _received_write(
-            SHEET_SPECS["biscuits_received"], ordered, SchoolTables.biscuit_receipts, True
+            SHEET_SPECS["biscuits_received"], ordered, SchoolTables.biscuit_receipts
         ),
         _consumption_write(
             SHEET_SPECS["milk_consumption"], ordered, lambda s: s.milk_consumption

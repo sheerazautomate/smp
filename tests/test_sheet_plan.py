@@ -249,9 +249,26 @@ class LayoutTests(unittest.TestCase):
                 min(school.biscuit_consumption), datetime.date(2026, 10, 1)
             )
 
-    def test_enrollment_uses_initial_not_latest(self):
-        write = self.writes["Biscuits Received"]
-        self.assertEqual([row[4] for row in write.values[1:7]], ["100", "101", "102", "103", "104", "105"])
+    def test_enrollment_uses_the_latest_portal_figure(self):
+        """make_bundle writes initial=N and latest=N+5; the latest must win."""
+        expected = [str(100 + index + 5) for index in range(6)]
+        for tab in self.writes:
+            self.assertEqual(
+                [row[4] for row in self.writes[tab].values[1:7]], expected, tab
+            )
+
+    def test_every_tab_reports_the_same_enrollment(self):
+        """A tab must never disagree with another about a school's enrollment.
+
+        The Received tabs used to write the initial (2026-09-25) count while the
+        Consumption tabs wrote the latest, so Summary divided by a number it
+        did not display.
+        """
+        seen = {}
+        for tab, write in self.writes.items():
+            seen[tab] = [row[4] for row in write.values[1:7]]
+        distinct = {tuple(values) for values in seen.values()}
+        self.assertEqual(len(distinct), 1, f"enrollment disagrees across tabs: {seen}")
 
     def test_sheets_have_six_school_rows(self):
         for write in self.writes.values():
