@@ -64,7 +64,6 @@ jobs:
       DELAY_INPUT: ${{ inputs.delay || '2.0' }}
       MAX_PAGES_INPUT: ${{ inputs.max_pages || '100' }}
       KEEP_LAST_INPUT: ${{ inputs.keep_last || '30' }}
-      STAGING_DIR: ${{ runner.temp }}/smp-exports
       PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
     steps:
       - name: Check out the repository
@@ -72,6 +71,11 @@ jobs:
         with:
           # Push back to the same branch this workflow ran from.
           ref: ${{ github.ref_name }}
+
+      # The runner context does not exist at workflow-level env (that made the
+      # whole file invalid), so the scratch path is resolved here instead.
+      - name: Set up scratch directory
+        run: echo "STAGING_DIR=$RUNNER_TEMP/smp-exports" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -154,7 +158,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: smp-export-${{ github.run_id }}
-          path: ${{ env.STAGING_DIR }}
+          path: ${{ runner.temp }}/smp-exports
           if-no-files-found: warn
           retention-days: 30
 
