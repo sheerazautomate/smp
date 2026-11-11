@@ -67,7 +67,7 @@ jobs:
       PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Push back to the same branch this workflow ran from.
           ref: ${{ github.ref_name }}
@@ -78,19 +78,42 @@ jobs:
         run: echo "STAGING_DIR=$RUNNER_TEMP/smp-exports" >> "$GITHUB_ENV"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
+          # setup-python's own `cache: pip` only stores download archives and
+          # still reinstalls every wheel, so the pip cache below does the work.
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+      - name: Cache pip downloads and wheels
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt', 'scripts/setup_workflow_env.py') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
 
-      - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+      # Chromium is a ~170 MB download. Cache the extracted build; the key is a
+      # hash of requirements.txt, so changing the pinned Playwright version
+      # invalidates it instead of reusing an incompatible browser.
+      - name: Cache Playwright browsers
+        id: browser-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install dependencies and Chromium
+        # The script skips the Chromium download when the cache filled the
+        # browsers directory, and always verifies the browser actually launches.
+        run: python scripts/setup_workflow_env.py
+
+      # Chromium's shared libraries are OS packages, not part of the browser
+      # download, so they are only needed on a cache miss.
+      - name: Install Chromium system libraries
+        if: ${{ steps.browser-cache.outputs.cache-hit != 'true' }}
+        run: sudo python -m playwright install-deps chromium
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
@@ -176,7 +199,7 @@ jobs:
 
       - name: Upload the bundle as an artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: smp-export-${{ github.run_id }}
           path: ${{ runner.temp }}/smp-exports
