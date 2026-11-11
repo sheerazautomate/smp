@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -136,9 +137,24 @@ class SyncCliTests(unittest.TestCase):
         self._temp.cleanup()
 
     def run_cli(self, *args):
+        """Run the CLI with no ambient sheet configuration.
+
+        The CLI reads SMP_SHEET_ID and SMP_SHEET_DRY_RUN from the environment,
+        so without this a developer's (or a CI job's) real values leak into the
+        assertions -- that made this test pass locally and fail on the runner,
+        where SMP_SHEET_ID is a repository secret.
+        """
+        cleared = {
+            name: os.environ.pop(name)
+            for name in (sync_sheets.SHEET_ID_ENV, sync_sheets.DRY_RUN_ENV)
+            if name in os.environ
+        }
         buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            code = sync_sheets.main(list(args))
+        try:
+            with redirect_stdout(buffer):
+                code = sync_sheets.main(list(args))
+        finally:
+            os.environ.update(cleared)
         return code, buffer.getvalue()
 
     def test_dry_run_prints_the_plan_without_a_spreadsheet_id(self):
