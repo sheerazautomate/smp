@@ -159,6 +159,17 @@ class WorkflowFileTests(unittest.TestCase):
                 with self.subTest(path=path.name):
                     self.assertNotIn("playwright", text)
                     self.assertNotIn("pip install -r requirements.txt", text)
+                    # The job runs the whole suite, which imports openpyxl for
+                    # the exporter tests. Omitting it failed a real run before
+                    # the sheet was ever touched. Check an *install* line, not
+                    # any mention: a comment naming the package must not satisfy
+                    # this (that mistake made the guard pass while the run broke).
+                    executed = "\n".join(
+                        line
+                        for line in text.splitlines()
+                        if not line.strip().startswith("#")
+                    )
+                    self.assertIn('"openpyxl', executed)
                 continue
             with self.subTest(path=path.name):
                 self.assertIn("scripts/setup_workflow_env.py", text)
