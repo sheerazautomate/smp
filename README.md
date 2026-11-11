@@ -5,7 +5,10 @@ A local command-line utility for exporting rendered HTML tables from the SMP sch
 ## What it captures
 
 - HTML `<table>` elements in the detail page, including tables rendered in hidden tab panels.
-- Local tab/pill controls and supported collapsed sections that can reveal additional tables.
+- Local tab/pill controls *and* tab-like button pairs (the portal's Milk/Biscuit
+  switch is a plain `<button id="tab-milk">`, not a declared tab), plus supported
+  collapsed sections that can reveal additional tables. Each view is loaded
+  completely when it is entered, so a table behind a tab is never left at page 1.
 - Common pagination controls inside pagination/pager containers, with a configurable safety limit.
 - Table captions/nearby headings, headers, rows, source URLs, and capture contexts for auditing.
 - Header `rowspan`/`colspan` layout and key/value tables without a `<thead>`.
