@@ -145,4 +145,4 @@ fail the job with a clear message and commit nothing.
 python -m unittest discover -s tests -v
 ```
 
-The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots), safe Excel/CSV export, CLI code-scope validation, and the export publisher used by the GitHub Actions worker (staging, index, pruning). They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.
+The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots), safe Excel/CSV export, CLI code-scope validation, and the export publisher used by the GitHub Actions worker (staging, index, pruning). A further set of static checks loads the workflow files and rejects expressions GitHub cannot evaluate where they are placed (for example `runner.*` inside a job's `env:`, which otherwise makes the whole workflow file invalid). They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.
