@@ -162,6 +162,37 @@ class WorkflowFileTests(unittest.TestCase):
         text = (WORKFLOW_DIR / "checks.yml").read_text(encoding="utf-8")
         self.assertIn("--skip-browser", text)
 
+    def test_install_steps_never_run_playwright_through_sudo(self):
+        """sudo resolves its own `python`, which lacks the installed packages.
+
+        This broke a real run: `sudo python -m playwright install-deps chromium`
+        failed with exit code 1 before extraction because sudo's PATH is not the
+        setup-python interpreter.
+        """
+        for path in self.files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    # Only executable lines; prose in comments may mention sudo.
+                    if stripped.startswith("#") or "playwright" not in stripped:
+                        continue
+                    self.assertNotIn(
+                        "sudo",
+                        stripped,
+                        f"{path.name}: playwright must not run under sudo: {stripped}",
+                    )
+
+    def test_every_browser_install_path_installs_the_os_libraries(self):
+        """A cache miss must still end up with a launchable Chromium."""
+        text = (WORKFLOW_DIR / "smp-extract.yml").read_text(encoding="utf-8")
+        # Either the script downloads a browser, or the workflow installs deps.
+        self.assertTrue(
+            "--with-deps" in text or "install-deps" in text,
+            "no step installs Chromium's system libraries",
+        )
+        self.assertIn("--with-deps chromium", text)
+
     def test_credentials_come_from_secrets_and_are_not_echoed(self):
         path = WORKFLOW_DIR / "smp-extract.yml"
         text = path.read_text(encoding="utf-8")

@@ -109,11 +109,18 @@ jobs:
         # browsers directory, and always verifies the browser actually launches.
         run: python scripts/setup_workflow_env.py
 
-      # Chromium's shared libraries are OS packages, not part of the browser
-      # download, so they are only needed on a cache miss.
-      - name: Install Chromium system libraries
+      # Chromium needs OS libraries that are *not* part of the browser download,
+      # so they are only installed when the browser cache missed.
+      # On a cache miss, `playwright install --with-deps` downloads the browser and
+      # installs those libraries in one step — the same command this workflow used
+      # before caching, and it needs no sudo.
+      #
+      # Do NOT reach for `sudo python -m playwright install-deps`: sudo resolves
+      # `python` from its own PATH, which is not the setup-python interpreter, so
+      # the module is missing and the job dies before extraction.
+      - name: Install Chromium system libraries (cache miss only)
         if: ${{ steps.browser-cache.outputs.cache-hit != 'true' }}
-        run: sudo python -m playwright install-deps chromium
+        run: python -m playwright install --with-deps chromium
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
