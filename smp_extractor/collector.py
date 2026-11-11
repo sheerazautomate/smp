@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from .models import ExtractedTable, SchoolResult
+from .pagination import PagerState, pager_states
 from .table_parser import normalize_table
 
 DEFAULT_BASE_URL = "https://smp26.pesrp.edu.pk"
@@ -24,7 +25,88 @@ TAB_SELECTOR = (
     '[role="tab"], [data-bs-toggle="tab"], [data-bs-toggle="pill"], '
     '[data-toggle="tab"], [data-toggle="pill"]'
 )
-INTERACTIVE_SELECTOR = 'a, button, [role="button"]'
+
+PAGER_INFO_JS = r"""() => {
+  // Report *structure* only; text parsing and page math live in Python so they
+  // can be unit-tested without a browser. One record per <table>.
+  const clean = value => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  const visible = element => {
+    if (!element) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const tables = Array.from(document.querySelectorAll('table'));
+
+  return tables.map((table, tableIndex) => {
+    const id = table.id || '';
+    let infoNode = null;
+    let pagerEl = null;
+    let lengthEl = null;
+
+    // Canonical DataTables association: <id>_info / <id>_paginate / <id>_length.
+    if (id) {
+      const byId = suffix => {
+        const node = document.getElementById(id + suffix);
+        return node && visible(node) ? node : null;
+      };
+      infoNode = byId('_info') || document.getElementById(id + '_info');
+      pagerEl = byId('_paginate');
+      lengthEl = byId('_length');
+    }
+    // Fallback: aria-describedby, the documented way to link a table to its info.
+    if (!infoNode) {
+      const described = (table.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+      for (const candidate of described) {
+        const node = document.getElementById(candidate);
+        // Reject an info node that belongs to a different table.
+        const owner = /^(.*)_info$/.exec(candidate);
+        if (node && (!owner || owner[1] === id)) { infoNode = node; break; }
+      }
+    }
+
+    let lengthValue = null;
+    let lengthHasAll = false;
+    if (lengthEl) {
+      const select = lengthEl.querySelector('select');
+      if (select) {
+        lengthValue = select.value;
+        lengthHasAll = Array.from(select.options).some(option => String(option.value) === '-1');
+      }
+    }
+
+    // Page markers: data-dt-idx on the anchors, li.active for the current page.
+    const numericIdxs = [];
+    let activeIdx = null;
+    if (pagerEl) {
+      pagerEl.querySelectorAll('a').forEach(anchor => {
+        const raw = anchor.getAttribute('data-dt-idx');
+        const text = clean(anchor.innerText || anchor.textContent);
+        let idx = null;
+        if (raw !== null && raw !== '' && !Number.isNaN(Number(raw))) idx = Number(raw);
+        else if (/^\d+$/.test(text)) idx = Number(text) - 1;
+        if (idx === null) return;
+        numericIdxs.push(idx);
+        const li = anchor.closest('li');
+        const active = anchor.getAttribute('aria-current') === 'page' ||
+          !!(li && li.classList.contains('active'));
+        if (active) activeIdx = idx;
+      });
+    }
+
+    return {
+      tableIndex,
+      tableId: id,
+      infoText: infoNode ? clean(infoNode.innerText || infoNode.textContent) : '',
+      hasPager: !!pagerEl,
+      hasLength: !!lengthEl,
+      lengthValue,
+      lengthHasAll,
+      numericIdxs,
+      activeIdx,
+    };
+  });
+}"""
 
 TABLE_SNAPSHOT_JS = r"""() => {
   const clean = value => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
@@ -65,6 +147,7 @@ TABLE_SNAPSHOT_JS = r"""() => {
     return {
       index,
       id: table.id || table.getAttribute('data-table-id') || table.getAttribute('data-dt-id') || '',
+      classes: String(table.className || ''),
       title: caption || clean(label) || sectionHeading(table),
       rows
     };
@@ -120,41 +203,6 @@ COLLAPSE_CANDIDATES_JS = r"""() => {
     const label = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
     const signature = [element.id, toggle, controls, href, label].join('|');
     candidates.push({index, label, signature});
-  });
-  return candidates;
-}"""
-
-PAGINATION_CANDIDATES_JS = r"""() => {
-  const selector = 'a,button,[role="button"]';
-  const elements = Array.from(document.querySelectorAll(selector));
-  const containerSelector = '.pagination,[class*="pagination" i],[class*="pager" i],[class*="paginate" i],nav[aria-label*="page" i],[role="navigation"][aria-label*="page" i]';
-  const visible = element => {
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-  };
-  const candidates = [];
-  elements.forEach((element, index) => {
-    const container = element.closest(containerSelector);
-    if (!container || !visible(element)) return;
-    const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
-    const aria = element.getAttribute('aria-label') || '';
-    const title = element.getAttribute('title') || '';
-    const classes = String(element.className || '');
-    const rel = element.getAttribute('rel') || '';
-    const isNext = /\bnext\b/i.test(`${text} ${aria} ${title}`) ||
-      /^(›|»|→|>>|››|»»)$/.test(text) ||
-      /(^|\s)next(\s|$)/i.test(classes) || /(^|\s)next(\s|$)/i.test(rel);
-    const disabled = element.disabled || element.getAttribute('aria-disabled') === 'true' ||
-      element.classList.contains('disabled') || !!element.closest('li.disabled,[aria-disabled="true"]');
-    if (!isNext || disabled) return;
-    candidates.push({
-      index,
-      text,
-      aria,
-      href: element.getAttribute('href') || '',
-      signature: [container.id, container.className, container.innerText, aria, title, text].join('|').slice(0, 500)
-    });
   });
   return candidates;
 }"""
@@ -410,8 +458,12 @@ def _click_tab(
         return False, label
 
     try:
-        locator = page.locator(TAB_SELECTOR).nth(int(descriptor.get("index", 0)))
-        if not locator.is_visible():
+        # Match on the tab's label/href instead of a positional index: the DOM
+        # can re-render between inspection and click, shifting indices.
+        locator = page.locator(TAB_SELECTOR).filter(
+            has_text=label if label != "unnamed tab" else None
+        ).first
+        if locator.count() == 0 or not locator.is_visible():
             return False, label
         active_state = locator.evaluate(
             "el => el.getAttribute('aria-selected') === 'true' || "
@@ -457,8 +509,24 @@ def _expand_collapsed_sections(
         signature = str(candidate.get("signature", ""))
         before_url = page.url
         try:
-            locator = page.locator(INTERACTIVE_SELECTOR).nth(int(candidate["index"]))
-            locator.click(timeout=4500)
+            handle = page.evaluate_handle(
+                """signature => {
+                  const all = Array.from(document.querySelectorAll('a,button,[role="button"]'));
+                  return all.find(element => {
+                    const toggle = element.getAttribute('data-bs-toggle') || element.getAttribute('data-toggle') || '';
+                    const controls = element.getAttribute('aria-controls') || '';
+                    const href = element.getAttribute('href') || '';
+                    const label = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+                    return [element.id, toggle, controls, href, label].join('|') === signature;
+                  }) || null;
+                }""",
+                signature,
+            )
+            element = handle.as_element()
+            if element is None:
+                blocked.add(signature)
+                continue
+            element.click(timeout=4500)
             _settle(page, short_wait_ms=300)
             clicks += 1
         except Exception as exc:
@@ -506,20 +574,70 @@ def _expand_collapsed_sections(
             result.warnings.append("Stopped expanding sections at the configured safety limit.")
 
 
-def _pagination_candidates(
-    page: Any, code: str, warnings: list[str] | None = None
-) -> list[dict[str, Any]]:
+def _pager_records(page: Any, warnings: list[str] | None = None) -> list[dict[str, Any]]:
+    """Raw per-table pager structure, straight from the rendered DOM."""
     try:
-        candidates = page.evaluate(PAGINATION_CANDIDATES_JS)
+        return page.evaluate(PAGER_INFO_JS)
     except Exception as exc:
         if warnings is not None:
             warnings.append(f"Could not inspect pagination controls ({type(exc).__name__}).")
         return []
-    return [
-        candidate
-        for candidate in candidates
-        if _same_school_route(page.url, str(candidate.get("href", "")), code)
-    ]
+
+
+def _current_pagers(page: Any, warnings: list[str] | None = None) -> dict[int, PagerState]:
+    return pager_states(_pager_records(page, warnings))
+
+
+def _set_page_length_all(page: Any, table_id: str) -> bool:
+    """Ask DataTables to render every row at once via its length selector.
+
+    ``select_option`` dispatches the native ``change`` event, which is what the
+    DataTables/jQuery listener reacts to.
+    """
+    if not table_id:
+        return False
+    try:
+        locator = page.locator(f"#{table_id}_length select").first
+        if locator.count() == 0:
+            return False
+        locator.select_option("-1", timeout=5000)
+        _settle(page, short_wait_ms=450)
+        return True
+    except Exception:
+        return False
+
+
+def _apply_pagination_accounting(page: Any, result: SchoolResult) -> None:
+    """Attach the portal's own row totals to the captured tables.
+
+    Association is by table DOM index (``PAGER_INFO_JS`` walks tables in the
+    same order as ``TABLE_SNAPSHOT_JS``), so a total can never land on a table
+    other than the one it describes.
+    """
+    pagers = _current_pagers(page, result.warnings)
+    for table in result.tables:
+        pager = pagers.get(table.table_index)
+        if pager is None:
+            continue
+        table.rows_expected = pager.total_rows
+        table.pages_expected = pager.page_count
+        table.pages_captured = max(
+            1, len([c for c in table.capture_contexts if "; page " in c])
+        )
+        table.pager_kind = (
+            "numbered-pages"
+            if pager.has_pager
+            else ("single-page" if not pager.is_paginated else "unknown")
+        )
+
+
+def _report_incomplete(result: SchoolResult) -> None:
+    """Warn (and later downgrade status) for every short capture."""
+    for table in result.incomplete_tables:
+        result.warnings.append(
+            f"Incomplete table capture: {table.title} "
+            f"({table.row_count} of {table.rows_expected} rows)."
+        )
 
 
 def _paginate_current_view(
@@ -531,58 +649,173 @@ def _paginate_current_view(
     max_pages: int,
     timeout_ms: int,
 ) -> None:
-    blocked: set[str] = set()
-    clicks = 0
+    """Capture every page of every paginated table in the current view.
 
-    while True:
-        _capture_tables(page, result, table_map, f"{context}; pagination state {clicks + 1}")
-        candidates = _pagination_candidates(page, result.emis_code, result.warnings)
-        candidate = next(
-            (item for item in candidates if item.get("signature") not in blocked), None
-        )
-        if candidate is None:
-            break
+    Each table is driven through its own pager (``<id>_length`` /
+    ``<id>_paginate`` / ``<id>_info``), so one table's pager never advances
+    another table's rows. The portal's "Showing 1 to 5 of 18 entries" line is
+    the source of truth for how many rows the export should contain.
+    """
+    _capture_tables(page, result, table_map, f"{context}; page 1")
+    pagers = _current_pagers(page, result.warnings)
+
+    for index in sorted(pagers):
+        pager = pagers[index]
+        if not pager.is_paginated:
+            continue
+        label = pager.table_id or f"table #{index + 1}"
+        pages_expected = pager.page_count or 1
+
+        # Fast path: "All" in the length selector renders the table in one go.
+        if pager.can_show_all and _set_page_length_all(page, pager.table_id):
+            _capture_tables(page, result, table_map, f"{context}; {label}; show all")
+            refreshed = _current_pagers(page, result.warnings).get(index)
+            if refreshed is not None:
+                pager = refreshed
+                pagers[index] = refreshed
+            if not pager.is_paginated:
+                continue
+
+        blocked: set[str] = set()
+        clicks = 0
+        visited = {pager.current_page if pager.current_page is not None else 0}
+        while clicks < max_pages:
+            candidates = _page_step_candidates(
+                page, pager.table_id, result.emis_code, visited
+            )
+            candidate = next(
+                (item for item in candidates if item.get("signature") not in blocked),
+                None,
+            )
+            if candidate is None:
+                break
+
+            before_url = page.url
+            try:
+                before_digest = page.evaluate(PAGE_DIGEST_JS)
+                # Click an element handle resolved by identity. Re-querying by
+                # positional index races with any DOM re-render in between.
+                handle = page.evaluate_handle(
+                    """signature => {
+                      const clean = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                      const all = Array.from(document.querySelectorAll('a,button,[role="button"]'));
+                      return all.find(element => {
+                        const text = clean(element.innerText || element.textContent);
+                        return [element.getAttribute('aria-controls') || '', text].join('|') === signature;
+                      }) || null;
+                    }""",
+                    candidate["signature"],
+                )
+                element = handle.as_element()
+                if element is None:
+                    blocked.add(str(candidate.get("signature", "")))
+                    continue
+                element.click(timeout=min(timeout_ms, 7000))
+                clicks += 1
+                _settle(page, short_wait_ms=450)
+            except Exception as exc:
+                result.warnings.append(
+                    f"Could not activate a pagination control ({type(exc).__name__})."
+                )
+                blocked.add(str(candidate.get("signature", "")))
+                continue
+
+            if not _is_detail_path(page.url, result.emis_code):
+                result.warnings.append(
+                    "A pagination control left the requested school page; returned to it."
+                )
+                _goto(page, detail_page_url, timeout_ms)
+                break
+
+            after_digest = page.evaluate(PAGE_DIGEST_JS)
+            if page.url == before_url and before_digest == after_digest:
+                # One more chance for an asynchronous re-render before giving up.
+                page.wait_for_timeout(700)
+                after_digest = page.evaluate(PAGE_DIGEST_JS)
+                if page.url == before_url and before_digest == after_digest:
+                    result.warnings.append(
+                        "A pagination control did not change the rendered tables; stopped that control."
+                    )
+                    blocked.add(str(candidate.get("signature", "")))
+                    continue
+
+            page_index = candidate.get("pageIndex")
+            visited.add(int(page_index) if page_index is not None else len(visited))
+            _capture_tables(
+                page,
+                result,
+                table_map,
+                f"{context}; {label}; page {len(visited)} of {pages_expected}",
+            )
+
         if clicks >= max_pages:
             result.warnings.append(
                 f"Stopped pagination after the configured limit of {max_pages} page advances."
             )
-            break
 
-        before_url = page.url
-        try:
-            before_digest = page.evaluate(PAGE_DIGEST_JS)
-            locator = page.locator(INTERACTIVE_SELECTOR).nth(int(candidate["index"]))
-            locator.click(timeout=min(timeout_ms, 7000))
-            clicks += 1
-            _settle(page, short_wait_ms=450)
-        except Exception as exc:
-            result.warnings.append(
-                f"Could not activate a pagination control ({type(exc).__name__})."
-            )
-            blocked.add(str(candidate.get("signature", "")))
-            continue
 
-        if not _is_detail_path(page.url, result.emis_code):
-            result.warnings.append("A pagination control left the requested school page; returned to it.")
-            _goto(page, detail_page_url, timeout_ms)
-            break
-
-        after_digest = page.evaluate(PAGE_DIGEST_JS)
-        if page.url == before_url and before_digest == after_digest:
-            # Give asynchronous UI updates a second chance before deciding the
-            # candidate is a no-op. Avoids an unbounded click loop on disabled
-            # or decorative controls.
-            page.wait_for_timeout(700)
-            after_digest = page.evaluate(PAGE_DIGEST_JS)
-            if page.url == before_url and before_digest == after_digest:
-                result.warnings.append(
-                    "A pagination control did not change the rendered tables; stopped that control."
-                )
-                blocked.add(str(candidate.get("signature", "")))
-            else:
-                blocked.clear()
-        else:
-            blocked.clear()
+def _page_step_candidates(
+    page: Any, table_id: str, code: str, visited: set[int]
+) -> list[dict[str, Any]]:
+    """Next unvisited page button inside one table's pager."""
+    try:
+        raw = page.evaluate(
+            """([tableId, visited]) => {
+              const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const pager = tableId ? document.getElementById(tableId + '_paginate') : null;
+              const scope = pager || document.querySelector('[class*="pagination" i]');
+              if (!scope) return [];
+              const seen = new Set(visited);
+              const out = [];
+              scope.querySelectorAll('a,button').forEach(element => {
+                const text = clean(element.innerText || element.textContent);
+                const dtIdx = element.getAttribute('data-dt-idx');
+                const aria = element.getAttribute('aria-label') || '';
+                const rel = element.getAttribute('rel') || '';
+                const classes = String(element.className || '');
+                const li = element.closest('li');
+                const disabled = element.disabled ||
+                  element.getAttribute('aria-disabled') === 'true' ||
+                  classes.split(/\s+/).includes('disabled') ||
+                  !!(li && (li.classList.contains('disabled') || li.getAttribute('aria-disabled') === 'true'));
+                if (disabled) return;
+                const isNext = /\bnext\b/i.test(text + ' ' + aria) ||
+                  /^(>|>>|›|»|→)$/.test(text) ||
+                  /(^|\s)next(\s|$)/i.test(classes) || /(^|\s)next(\s|$)/i.test(rel);
+                const isPrev = /\b(previous|prev)\b/i.test(text + ' ' + aria) ||
+                  /^(<|<<|‹|«|←)$/.test(text) ||
+                  /(^|\s)previous(\s|$)/i.test(classes);
+                let pageIndex = null;
+                if (dtIdx !== null && dtIdx !== '' && !Number.isNaN(Number(dtIdx))) pageIndex = Number(dtIdx);
+                else if (/^\d+$/.test(text)) pageIndex = Number(text) - 1;
+                const active = !!(li && li.classList.contains('active')) ||
+                  element.getAttribute('aria-current') === 'page';
+                if (active) return;
+                if (pageIndex !== null && seen.has(pageIndex)) return;
+                if (pageIndex === null && !isNext) return;
+                if (isPrev && pageIndex === null) return;
+                out.push({
+                  pageIndex,
+                  next: isNext,
+                  signature: [element.getAttribute('aria-controls') || '', text].join('|'),
+                });
+              });
+              out.sort((a, b) => {
+                if (a.pageIndex !== null && b.pageIndex !== null) return a.pageIndex - b.pageIndex;
+                if (a.pageIndex !== null) return -1;
+                if (b.pageIndex !== null) return 1;
+                return 0;
+              });
+              return out;
+            }""",
+            [table_id, sorted(visited)],
+        )
+    except Exception:
+        return []
+    return [
+        item for item in raw
+        if _same_school_route(page.url, item.get("href", ""), code)
+    ]
 
 
 def _extract_school(
@@ -654,7 +887,14 @@ def _extract_school(
     result.tables = sorted(
         table_map.values(), key=lambda item: (item.table_index, item.title.casefold())
     )
-    result.status = "ok" if result.tables else "no_tables"
+    _apply_pagination_accounting(page, result)
+    _report_incomplete(result)
+    if not result.tables:
+        result.status = "no_tables"
+    elif result.incomplete_tables:
+        result.status = "incomplete"
+    else:
+        result.status = "ok"
     if not result.tables:
         result.warnings.append("No HTML tables were found in the rendered school detail page.")
 

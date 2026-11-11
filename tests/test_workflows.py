@@ -121,6 +121,13 @@ class WorkflowFileTests(unittest.TestCase):
                 following = block[1].split("- name:", 1)[0]
                 self.assertIn("env.PUBLISH == 'true'", following)
 
+    def test_partial_exports_fail_the_job(self):
+        """A short capture must never leave a green run behind."""
+        text = (WORKFLOW_DIR / "smp-extract.yml").read_text(encoding="utf-8")
+        self.assertIn("EXTRACT_INCOMPLETE=1", text)
+        self.assertIn("Fail the run if any school was incomplete", text)
+        self.assertIn("exit 1", text.split("Fail the run if any school was incomplete")[1])
+
     def test_credentials_come_from_secrets_and_are_not_echoed(self):
         path = WORKFLOW_DIR / "smp-extract.yml"
         text = path.read_text(encoding="utf-8")

@@ -94,9 +94,13 @@ def _print_results(results: list, output_dir: Path) -> None:
     print("\nExtraction summary")
     print("=" * 72)
     for result in results:
+        expected = result.rows_expected
+        rows = f"{result.row_count} row(s)"
+        if expected and expected != result.row_count:
+            rows = f"{result.row_count} of {expected} row(s) — {expected - result.row_count} missing"
         print(
             f"{result.emis_code}: {result.status} | "
-            f"{result.table_count} table(s), {result.row_count} row(s)"
+            f"{result.table_count} table(s), {rows}"
         )
         if result.error:
             print(f"  Error: {result.error}")
