@@ -128,6 +128,40 @@ class WorkflowFileTests(unittest.TestCase):
         self.assertIn("Fail the run if any school was incomplete", text)
         self.assertIn("exit 1", text.split("Fail the run if any school was incomplete")[1])
 
+    def test_chromium_and_pip_are_cached(self):
+        """Re-downloading Chromium every run was the main avoidable cost."""
+        text = (WORKFLOW_DIR / "smp-extract.yml").read_text(encoding="utf-8")
+        self.assertIn("name: Cache Playwright browsers", text)
+        self.assertIn("~/.cache/ms-playwright", text)
+        self.assertIn("name: Cache pip downloads and wheels", text)
+        # The browser cache key must move when the Playwright pin changes.
+        browser_block = text.split("name: Cache Playwright browsers", 1)[1]
+        browser_block = browser_block.split("name:", 1)[0]
+        self.assertIn("hashFiles('requirements.txt')", browser_block)
+        self.assertIn("steps.browser-cache.outputs.cache-hit", text)
+
+    def test_workflow_actions_use_current_major_versions(self):
+        """Node 20 actions were deprecated; old pins emit warnings on every run."""
+        for path in self.files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertNotIn("actions/checkout@v4", text)
+                self.assertNotIn("actions/setup-python@v5", text)
+                self.assertNotIn("actions/upload-artifact@v4", text)
+                self.assertNotIn("actions/cache@v4", text)
+
+    def test_dependency_install_goes_through_the_cache_aware_script(self):
+        for path in self.files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertIn("scripts/setup_workflow_env.py", text)
+                # A bare pip install would bypass the cache logic.
+                self.assertNotIn("pip install -r requirements.txt", text)
+
+    def test_unit_tests_run_without_downloading_a_browser(self):
+        text = (WORKFLOW_DIR / "checks.yml").read_text(encoding="utf-8")
+        self.assertIn("--skip-browser", text)
+
     def test_credentials_come_from_secrets_and_are_not_echoed(self):
         path = WORKFLOW_DIR / "smp-extract.yml"
         text = path.read_text(encoding="utf-8")

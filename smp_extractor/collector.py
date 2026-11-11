@@ -142,17 +142,37 @@ TABLE_SNAPSHOT_JS = r"""() => {
             rowspan: cell.rowSpan || 1
           }))
       }));
+    const visible = element => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (rect.width > 0 && rect.height > 0) return true;
+      // A table inside a hidden tab panel still matters once its tab is opened,
+      // but its current rows are stale; report whether it is rendered now.
+      return false;
+    };
     const caption = table.caption ? clean(table.caption.innerText || table.caption.textContent) : '';
     const label = table.getAttribute('aria-label') || table.getAttribute('summary') || '';
     return {
       index,
       id: table.id || table.getAttribute('data-table-id') || table.getAttribute('data-dt-id') || '',
       classes: String(table.className || ''),
+      visible: visible(table),
       title: caption || clean(label) || sectionHeading(table),
       rows
     };
   });
 }"""
+
+# Buttons that swap content can be styled as plain Bootstrap tabs, as
+# data-bs-toggle controls, *or* as bare buttons driven by a custom script (the
+# portal's Milk/Biscuit pair are plain <button id="tab-milk"> elements). The DOM
+# cannot tell those apart from any other button, so the caller also tries
+# buttons that sit next to a peer and reveal new tables when clicked.
+TAB_SELECTOR_JS = (
+    '[role="tab"], [data-bs-toggle="tab"], [data-bs-toggle="pill"], '
+    '[data-toggle="tab"], [data-toggle="pill"]'
+)
 
 TAB_DESCRIPTORS_JS = r"""() => Array.from(document.querySelectorAll(
   '[role="tab"], [data-bs-toggle="tab"], [data-bs-toggle="pill"], [data-toggle="tab"], [data-toggle="pill"]'
@@ -165,6 +185,52 @@ TAB_DESCRIPTORS_JS = r"""() => Array.from(document.querySelectorAll(
   selected: element.getAttribute('aria-selected') === 'true',
   active: element.classList.contains('active') || !!(element.parentElement && element.parentElement.classList.contains('active'))
 }))"""
+
+#: Candidate content-switching buttons that are *not* declared tabs.
+TAB_LIKE_CANDIDATES_JS = r"""() => {
+  // Content switchers styled as plain buttons (e.g. id="tab-milk"). Only
+  // considered when marked active, or grouped with a sibling control, so
+  // ordinary action buttons are not clicked blindly.
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = element => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const declared = Array.from(document.querySelectorAll(
+    '[role="tab"], [data-bs-toggle="tab"], [data-bs-toggle="pill"], [data-toggle="tab"], [data-toggle="pill"]'
+  ));
+  const all = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
+  const out = [];
+  all.forEach((element, index) => {
+    if (declared.includes(element)) return;
+    if (!visible(element)) return;
+    const label = clean(element.innerText || element.textContent);
+    const id = element.id || '';
+    const marker = `${label} ${id}`;
+    const looksLikeTab = /(^|[-_\s])tab([-_\s]|$)/i.test(marker) ||
+      /(^|\s)(nav-link|btn-group|segmented)(\s|$)/i.test(String(element.className || ''));
+    const explicitlyActive = element.classList.contains('active') ||
+      element.getAttribute('aria-selected') === 'true' ||
+      element.getAttribute('aria-pressed') === 'true';
+    const parent = element.parentElement;
+    const siblingControls = parent
+      ? Array.from(parent.children).filter(node => node !== element && node.matches('button, a')).length
+      : 0;
+    // Content switchers come in groups; a lone active button is something else
+    // (a styled action button), so it is not treated as a view.
+    if (siblingControls === 0) return;
+    if (!looksLikeTab && !explicitlyActive) return;
+    out.push({
+      index,
+      text: label,
+      id: id,
+      signature: [id, label].join('|'),
+      active: explicitlyActive,
+    });
+  });
+  return out;
+}"""
 
 COLLAPSE_CANDIDATES_JS = r"""() => {
   const selector = 'a,button,[role="button"]';
@@ -199,6 +265,14 @@ COLLAPSE_CANDIDATES_JS = r"""() => {
     const disabled = element.disabled || element.getAttribute('aria-disabled') === 'true' ||
       element.classList.contains('disabled') || !!(element.closest('li.disabled'));
     const localHref = !href || href === '#' || href.startsWith('#') || href.toLowerCase().startsWith('javascript:');
+    // A control sitting next to a peer control in a button group is a content
+    // switcher (tab/pill), not a collapse toggle. Without this the Milk/Biscuit
+    // tabs were clicked here, clicking the already-open one timed out, and the
+    // real tabs then looked "blocked".
+    const parent = element.parentElement;
+    const inControlGroup = !!(parent && Array.from(parent.children)
+      .filter(node => node !== element && node.matches('button, a')).length > 0);
+    if (inControlGroup) return;
     if (!collapseControl || !collapsed || disabled || !localHref || !visible(element)) return;
     const label = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
     const signature = [element.id, toggle, controls, href, label].join('|');
@@ -411,6 +485,11 @@ def _capture_tables(
 ) -> None:
     snapshots = page.evaluate(TABLE_SNAPSHOT_JS)
     for snapshot in snapshots:
+        # Hidden tab panels keep whatever was rendered last; capturing them would
+        # attribute stale rows to a table that has not been visited yet. Each view
+        # is captured explicitly while it is visible instead.
+        if snapshot.get("visible") is False:
+            continue
         table = normalize_table(snapshot, result.emis_code, page.url, context)
         key = (table.table_ref, table.title, tuple(table.headers))
         existing = table_map.get(key)
@@ -471,8 +550,11 @@ def _click_tab(
             "!!(el.parentElement && el.parentElement.classList.contains('active'))"
         )
         if not active_state:
+            before_digest = page.evaluate(PAGE_DIGEST_JS)
             locator.click(timeout=min(timeout_ms, 6000))
             _settle(page, short_wait_ms=350)
+            if page.evaluate(PAGE_DIGEST_JS) == before_digest:
+                return False, label
         if not _is_detail_path(page.url, code):
             _goto(page, detail_page_url, timeout_ms)
             return False, label
@@ -607,28 +689,138 @@ def _set_page_length_all(page: Any, table_id: str) -> bool:
         return False
 
 
-def _apply_pagination_accounting(page: Any, result: SchoolResult) -> None:
-    """Attach the portal's own row totals to the captured tables.
+def _view_candidates(page: Any, warnings: list[str] | None = None) -> list[dict[str, Any]]:
+    """Content-switching controls, declared tabs first, then tab-like buttons."""
+    views: list[dict[str, Any]] = []
+    for tab in _tab_descriptors(page, warnings):
+        href = str(tab.get("href") or "")
+        is_local = not href or href.startswith("#")
+        declared = tab.get("role") == "tab" or tab.get("toggle") in {"tab", "pill"}
+        if is_local and declared:
+            label = " ".join(str(tab.get("text") or "").split()) or "unnamed tab"
+            views.append(
+                {
+                    "kind": "tab",
+                    "descriptor": tab,
+                    "label": label,
+                    "signature": str(tab.get("signature") or label),
+                    "declared": True,
+                    "active": bool(tab.get("active") or tab.get("selected")),
+                }
+            )
+    try:
+        extras = page.evaluate(TAB_LIKE_CANDIDATES_JS)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"Could not inspect tab-like buttons ({type(exc).__name__}).")
+        extras = []
+    seen = {view["label"] for view in views}
+    for extra in extras or []:
+        label = " ".join(str(extra.get("text") or "").split()) or str(extra.get("id") or "")
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        views.append(
+            {
+                "kind": "button",
+                "descriptor": extra,
+                "label": label,
+                "signature": str(extra.get("signature") or label),
+                "declared": False,
+                "active": bool(extra.get("active")),
+            }
+        )
+    return views
 
-    Association is by table DOM index (``PAGER_INFO_JS`` walks tables in the
-    same order as ``TABLE_SNAPSHOT_JS``), so a total can never land on a table
-    other than the one it describes.
+
+def _activate_view(
+    page: Any,
+    view: dict[str, Any],
+    detail_page_url: str,
+    code: str,
+    timeout_ms: int,
+) -> tuple[str, bool]:
+    """Click a view's control; return ``(label, activated)``."""
+    label = str(view.get("label") or "unnamed tab")
+    if view.get("kind") == "tab":
+        clicked, resolved = _click_tab(
+            page, view["descriptor"], detail_page_url, code, timeout_ms
+        )
+        return resolved, clicked
+
+    signature = str(view.get("signature") or label)
+    try:
+        handle = page.evaluate_handle(
+            """signature => {
+              const clean = value => String(value || '').replace(/\\s+/g, ' ').trim();
+              const all = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
+              return all.find(element => [element.id || '', clean(element.innerText || element.textContent)].join('|') === signature) || null;
+            }""",
+            signature,
+        )
+        element = handle.as_element()
+        if element is None:
+            return label, False
+        before_digest = page.evaluate(PAGE_DIGEST_JS)
+        element.click(timeout=min(timeout_ms, 6000))
+        _settle(page, short_wait_ms=400)
+        after_digest = page.evaluate(PAGE_DIGEST_JS)
+        if after_digest == before_digest and not view.get("active"):
+            # Clicking must change what is rendered. A no-op click would make the
+            # next capture attribute this panel's rows to the other table.
+            page.wait_for_timeout(600)
+            if page.evaluate(PAGE_DIGEST_JS) == before_digest:
+                return label, False
+    except Exception:
+        return label, False
+    if not _is_detail_path(page.url, code):
+        _goto(page, detail_page_url, timeout_ms)
+        return label, False
+    return label, True
+
+
+def _load_view(
+    page: Any,
+    result: SchoolResult,
+    table_map: dict[tuple[str, str, tuple[str, ...]], ExtractedTable],
+    context: str,
+    detail_page_url: str,
+    max_pages: int,
+    timeout_ms: int,
+) -> None:
+    """Capture the current view once, then complete every table in it."""
+    _capture_tables(page, result, table_map, context)
+    _paginate_current_view(
+        page, result, table_map, context, detail_page_url, max_pages, timeout_ms
+    )
+    _tag_view_pagers(page, result, context)
+
+
+def _tag_view_pagers(page: Any, result: SchoolResult, context: str) -> None:
+    """Attach each table's own totals and remember which view they came from.
+
+    ``TABLE_SNAPSHOT_JS`` and ``PAGER_INFO_JS`` both index tables in whole-document
+    order, so matching on that index is exact — no guessing from list positions,
+    which mis-associated totals when a tab hid one of the tables.
     """
     pagers = _current_pagers(page, result.warnings)
-    for table in result.tables:
-        pager = pagers.get(table.table_index)
-        if pager is None:
+    by_index = {table.table_index: table for table in result.tables}
+    for index, pager in pagers.items():
+        table = by_index.get(index)
+        if table is None:
             continue
         table.rows_expected = pager.total_rows
         table.pages_expected = pager.page_count
-        table.pages_captured = max(
-            1, len([c for c in table.capture_contexts if "; page " in c])
-        )
-        table.pager_kind = (
-            "numbered-pages"
-            if pager.has_pager
-            else ("single-page" if not pager.is_paginated else "unknown")
-        )
+        table.pager_view = context
+        table.pager_kind = "numbered-pages" if pager.has_pager else "single-page"
+        # Count rendered page states for this view, not every capture: the
+        # "show all" snapshot is one state even though it follows page 1.
+        page_states = [
+            c
+            for c in table.capture_contexts
+            if c.startswith(context) and ("; page " in c or c == context)
+        ]
+        table.pages_captured = max(1, len(page_states))
 
 
 def _report_incomplete(result: SchoolResult) -> None:
@@ -667,6 +859,8 @@ def _paginate_current_view(
         pages_expected = pager.page_count or 1
 
         # Fast path: "All" in the length selector renders the table in one go.
+        # Selecting it can raise if the select is replaced by a re-render, which
+        # is why the caller falls back to walking pages.
         if pager.can_show_all and _set_page_length_all(page, pager.table_id):
             _capture_tables(page, result, table_map, f"{context}; {label}; show all")
             refreshed = _current_pagers(page, result.warnings).get(index)
@@ -839,55 +1033,73 @@ def _extract_school(
     table_map: dict[tuple[str, str, tuple[str, ...]], ExtractedTable] = {}
     _capture_tables(page, result, table_map, "initial page state")
 
-    # Expand any default-view sections first; this also catches a tab control
-    # that only appears after its parent section is opened.
+    # Expand any default-view sections first; this also catches a control that
+    # only appears after its parent section is opened.
     _expand_collapsed_sections(
         page, result, table_map, "default view", detail_page_url, timeout_ms=timeout_ms
     )
-    tabs = _tab_descriptors(page, result.warnings)
-    processable_tabs = [
-        tab
-        for tab in tabs
-        if (not tab.get("href") or str(tab.get("href")).startswith("#"))
-        and (tab.get("role") == "tab" or tab.get("toggle") in {"tab", "pill"})
-    ]
 
-    if not processable_tabs:
-        _paginate_current_view(
-            page,
-            result,
-            table_map,
-            "default view",
-            detail_page_url,
-            max_pages,
-            timeout_ms,
+    # A *view* is one rendered state that can hide tables: the default view, or
+    # one per tab. Each view is loaded completely when it is entered, so a tab is
+    # never left half-captured merely because it was clicked last.
+    views = _view_candidates(page, result.warnings)
+    contexts: dict[str, dict[str, Any] | None] = {"default view": None}
+
+    _load_view(
+        page,
+        result,
+        table_map,
+        "default view",
+        detail_page_url,
+        max_pages,
+        timeout_ms,
+    )
+
+    for view in views:
+        if view.get("active"):
+            # Already on screen — the default view pass captured it. Clicking it
+            # would be a no-op and would look like a failed activation.
+            continue
+        label, clicked = _activate_view(
+            page, view, detail_page_url, result.emis_code, timeout_ms
         )
-    else:
-        for tab in processable_tabs:
-            clicked, label = _click_tab(
-                page, tab, detail_page_url, result.emis_code, timeout_ms
-            )
-            context = f"tab: {label}" if clicked else f"tab (not activated): {label}"
-            if not clicked:
-                result.warnings.append(f"Could not activate or verify tab: {label}.")
-            _capture_tables(page, result, table_map, context)
-            _expand_collapsed_sections(
-                page, result, table_map, context, detail_page_url, timeout_ms=timeout_ms
-            )
-            _paginate_current_view(
-                page,
-                result,
-                table_map,
-                context,
-                detail_page_url,
-                max_pages,
-                timeout_ms,
-            )
+        if not clicked:
+            result.warnings.append(f"Could not activate or verify tab: {label}.")
+            continue
+        context = f"tab: {label}"
+        contexts[context] = view
+        _capture_tables(page, result, table_map, context)
+        _expand_collapsed_sections(
+            page, result, table_map, context, detail_page_url, timeout_ms=timeout_ms
+        )
+        _load_view(
+            page, result, table_map, context, detail_page_url, max_pages, timeout_ms
+        )
+
+    # Second pass: a view that still holds an incomplete table is revisited and
+    # finished. This is what keeps a table behind a tab from being left at page 1.
+    for _ in range(len(contexts)):
+        incomplete_views = {
+            table.pager_view
+            for table in table_map.values()
+            if table.pager_view and not table.is_complete
+        }
+        target = next(
+            (context for context in incomplete_views if context in contexts), None
+        )
+        if target is None:
+            break
+        view = contexts.pop(target)
+        if view is None:  # default view is not reachable by clicking a tab
+            continue
+        _activate_view(page, view, detail_page_url, result.emis_code, timeout_ms)
+        _load_view(
+            page, result, table_map, target, detail_page_url, max_pages, timeout_ms
+        )
 
     result.tables = sorted(
         table_map.values(), key=lambda item: (item.table_index, item.title.casefold())
     )
-    _apply_pagination_accounting(page, result)
     _report_incomplete(result)
     if not result.tables:
         result.status = "no_tables"

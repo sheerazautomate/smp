@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SMP site</title></head>
+<body>
+<h3>CONSUMPTION</h3>
+<div class="btn-group" role="group">
+  <button type="button" class="btn active btn-primary" id="tab-milk">Milk</button>
+  <button type="button" class="btn btn-outline-primary" id="tab-biscuit">Biscuit</button>
+</div>
+
+<!-- Milk panel: visible by default -->
+<div id="panel-milk">
+<div id="DataTables_Table_0_wrapper" class="dataTables_wrapper dt-bootstrap5 no-footer">
+  <div class="row"><div class="col-sm-12 col-md-6">
+    <div class="dataTables_length" id="DataTables_Table_0_length">
+      <label>Show <select name="DataTables_Table_0_length" aria-controls="DataTables_Table_0" class="form-select form-select-sm">
+        <option value="5">5</option><option value="10">10</option><option value="25">25</option>
+        <option value="50">50</option><option value="-1">All</option></select> entries</label>
+    </div></div></div>
+  <div class="row dt-row"><div class="col-sm-12">
+    <table class="basic-datatable-sp table listing-table-smp consumption-summary-table dataTable no-footer"
+           id="DataTables_Table_0" aria-describedby="DataTables_Table_0_info">
+      <thead><tr><th class="sorting sorting_asc">Sr#</th><th>Date</th><th>ECE</th><th>Nursery</th><th>Class 1</th></tr></thead>
+      <tbody><tr class="odd">
+          <td class="sorting_1">1</td><td>04-11-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="even">
+          <td class="sorting_1">2</td><td>03-11-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="odd">
+          <td class="sorting_1">3</td><td>02-11-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="even">
+          <td class="sorting_1">4</td><td>28-10-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="odd">
+          <td class="sorting_1">5</td><td>27-10-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr></tbody>
+    </table>
+  </div></div>
+  <div class="row">
+    <div class="col-sm-12 col-md-5">
+      <div class="dataTables_info" id="DataTables_Table_0_info" role="status" aria-live="polite">Showing 1 to 5 of 18 entries</div>
+    </div>
+    <div class="col-sm-12 col-md-7">
+      <div class="dataTables_paginate paging_numbers" id="DataTables_Table_0_paginate"><ul class="pagination">
+        <li class="paginate_button page-item active"><a href="#" aria-controls="DataTables_Table_0" role="link" aria-current="page" data-dt-idx="0" tabindex="0" class="page-link">1</a></li>
+        <li class="paginate_button page-item "><a href="#" aria-controls="DataTables_Table_0" role="link" data-dt-idx="1" tabindex="0" class="page-link">2</a></li>
+      </ul></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- Biscuit panel: hidden until the tab is clicked -->
+<div id="panel-biscuit" style="display:none">
+<div id="DataTables_Table_1_wrapper" class="dataTables_wrapper dt-bootstrap5 no-footer">
+  <div class="row"><div class="col-sm-12 col-md-6">
+    <div class="dataTables_length" id="DataTables_Table_1_length">
+      <label>Show <select name="DataTables_Table_1_length" aria-controls="DataTables_Table_1" class="form-select form-select-sm">
+        <option value="5">5</option><option value="10">10</option><option value="25">25</option>
+        <option value="50">50</option><option value="-1">All</option></select> entries</label>
+    </div></div></div>
+  <div class="row dt-row"><div class="col-sm-12">
+    <table class="basic-datatable-sp table listing-table-smp consumption-summary-table dataTable no-footer"
+           id="DataTables_Table_1" aria-describedby="DataTables_Table_1_info">
+      <thead><tr><th class="sorting sorting_asc">Sr#</th><th>Date</th><th>ECE</th><th>Nursery</th><th>Class 1</th></tr></thead>
+      <tbody><tr class="odd">
+          <td class="sorting_1">1</td><td>05-11-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="even">
+          <td class="sorting_1">2</td><td>29-10-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="odd">
+          <td class="sorting_1">3</td><td>22-10-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="even">
+          <td class="sorting_1">4</td><td>15-10-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr>
+<tr class="odd">
+          <td class="sorting_1">5</td><td>08-10-2026</td><td>2</td><td>31</td><td>17</td>
+        </tr></tbody>
+    </table>
+  </div></div>
+  <div class="row">
+    <div class="col-sm-12 col-md-5">
+      <div class="dataTables_info" id="DataTables_Table_1_info" role="status" aria-live="polite">Showing 1 to 5 of 6 entries</div>
+    </div>
+    <div class="col-sm-12 col-md-7">
+      <div class="dataTables_paginate paging_numbers" id="DataTables_Table_1_paginate"><ul class="pagination">
+        <li class="paginate_button page-item active"><a href="#" aria-controls="DataTables_Table_1" role="link" aria-current="page" data-dt-idx="0" tabindex="0" class="page-link">1</a></li>
+        <li class="paginate_button page-item "><a href="#" aria-controls="DataTables_Table_1" role="link" data-dt-idx="1" tabindex="0" class="page-link">2</a></li>
+      </ul></div>
+    </div>
+  </div>
+</div>
+</div>
+</body></html>

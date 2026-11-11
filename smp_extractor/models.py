@@ -22,6 +22,9 @@ class ExtractedTable:
     pages_captured: int = 0
     pages_expected: int | None = None
     pager_kind: str = ""
+    #: Which rendered view this table's pager belongs to (``default view`` or
+    #: ``tab: <label>``), so an incomplete table can be revisited in context.
+    pager_view: str = ""
     _seen_snapshots: set[tuple[tuple[str, ...], ...]] = field(
         default_factory=set, repr=False
     )

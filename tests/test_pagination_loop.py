@@ -9,9 +9,9 @@ import unittest
 
 from smp_extractor.collector import (
     PAGE_DIGEST_JS,
-    _apply_pagination_accounting,
     _paginate_current_view,
     _report_incomplete,
+    _tag_view_pagers,
 )
 from smp_extractor.models import SchoolResult
 
@@ -175,7 +175,7 @@ def _run(page, max_pages=100, result=None):
     result.tables = sorted(
         table_map.values(), key=lambda item: (item.table_index, item.title.casefold())
     )
-    _apply_pagination_accounting(page, result)
+    _tag_view_pagers(page, result, "default view")
     _report_incomplete(result)
     return result, table_map
 
