@@ -11,6 +11,7 @@ not a full re-implementation of GitHub's expression validator. Run
 ``actionlint`` for deeper checking when it is available locally.
 """
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -253,6 +254,47 @@ class WorkflowFileTests(unittest.TestCase):
             "GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}",
             text,
         )
+
+    def test_every_step_reading_a_secret_maps_it_into_its_env(self):
+        """A secret is only a variable in a step that maps it.
+
+        The secrets-check step tested ${GOOGLE_SERVICE_ACCOUNT_JSON} without an
+        env: block, so it always saw "" and failed a real run even though the
+        secret was configured correctly.
+        """
+        import yaml
+
+        try:
+            document = yaml.safe_load(self._sync_text())
+        except ImportError:  # pragma: no cover - PyYAML is optional
+            self.skipTest("PyYAML is not installed")
+
+        workflow_env = set((document.get("env") or {}))
+        job = document["jobs"]["sync"]
+        job_env = workflow_env | set(job.get("env") or {})
+
+        for step in job["steps"]:
+            name = step.get("name", "<unnamed>")
+            step_env = job_env | set(step.get("env") or {})
+            body = step.get("run") or ""
+            for secret in re.findall(r"secrets\.([A-Z0-9_]+)", json.dumps(step)):
+                self.assertIn(
+                    secret,
+                    step_env,
+                    f"step {name!r} references secrets.{secret} without mapping it",
+                )
+            # Only variables the step does not define itself: `STATUS=...` in
+            # the script body is local to the shell and legitimately absent
+            # from env.
+            local = set(re.findall(r"^\s*([A-Z0-9_]+)=", body, re.MULTILINE))
+            for variable in set(re.findall(r"\$\{([A-Z][A-Z0-9_]+)\}", body)) - local:
+                if variable in {"RUNNER_TEMP", "GITHUB_ENV", "GITHUB_STEP_SUMMARY"}:
+                    continue
+                self.assertIn(
+                    variable,
+                    step_env,
+                    f"step {name!r} reads ${{{variable}}} but never sets it",
+                )
 
     def test_sync_never_echoes_the_service_account_key(self):
         text = self._sync_text()

@@ -98,6 +98,12 @@ jobs:
 
       - name: Check the sheet secrets are configured
         if: ${{ inputs.dry_run != true }}
+        # A secret must be mapped into the step's env to exist as a variable.
+        # This step used to test ${GOOGLE_SERVICE_ACCOUNT_JSON} without mapping
+        # it, so it always saw an empty string and failed even when the secret
+        # was present. Keep this env block in step with the one below.
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           if [ -z "${SMP_SHEET_ID}" ]; then
             echo "::error::Add the SMP_SHEET_ID repository secret (the workbook id)."
