@@ -262,12 +262,12 @@ class WorkflowFileTests(unittest.TestCase):
         env: block, so it always saw "" and failed a real run even though the
         secret was configured correctly.
         """
-        import yaml
-
         try:
-            document = yaml.safe_load(self._sync_text())
+            import yaml  # noqa: PLC0415 - optional test dependency
         except ImportError:  # pragma: no cover - PyYAML is optional
             self.skipTest("PyYAML is not installed")
+
+        document = yaml.safe_load(self._sync_text())
 
         workflow_env = set((document.get("env") or {}))
         job = document["jobs"]["sync"]
