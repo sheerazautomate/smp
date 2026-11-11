@@ -1,8 +1,34 @@
 {
-  "updated_at_utc": "2026-11-11T08:07:06+00:00",
-  "latest": "20261111_080706",
-  "run_count": 3,
+  "updated_at_utc": "2026-11-11T11:35:11+00:00",
+  "latest": "20261111_113511",
+  "run_count": 4,
   "runs": [
+    {
+      "run_id": "20261111_113511",
+      "path": "data/exports/20261111_113511",
+      "generated_at_utc": "2026-11-11T11:35:11+00:00",
+      "tool_version": "0.1.0",
+      "base_url": "https://smp26.pesrp.edu.pk",
+      "requested_codes": [
+        "32230155",
+        "32230183",
+        "32230566",
+        "32230576",
+        "32230763",
+        "32230764"
+      ],
+      "statuses": {
+        "32230155": "ok",
+        "32230183": "ok",
+        "32230566": "ok",
+        "32230576": "ok",
+        "32230763": "ok",
+        "32230764": "ok"
+      },
+      "table_count": 36,
+      "row_count": 394,
+      "workflow_run_url": "https://github.com/sheerazautomate/smp/actions/runs/43012713905"
+    },
     {
       "run_id": "20261111_080706",
       "path": "data/exports/20261111_080706",
