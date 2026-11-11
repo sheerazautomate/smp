@@ -1,2 +1,7 @@
 openpyxl>=3.1,<4
 playwright>=1.50,<2
+
+# Google Sheets sync (scripts/sync_sheets.py). Split out so the extraction job
+# does not pay for them; workflows/sync-sheets.yml installs the same two pins.
+google-api-python-client>=2.100,<3
+google-auth>=2.20,<3

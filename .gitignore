@@ -5,5 +5,8 @@ venv/
 .env
 .env.*
 !.env.example
+# Service-account keys for the Sheets sync must never be committed.
+service-account*.json
+*service*account*.json
 /exports/
 *.log

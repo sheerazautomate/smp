@@ -177,6 +177,59 @@ fail the job with a clear message and commit nothing.
 
 `.github/workflows/checks.yml` runs the unit tests on every push and pull request.
 
+## Fill the Google Sheet
+
+The exported bundle is the source for the **SMP Master Sheet Marhan Male**
+workbook. `scripts/sync_sheets.py` maps the bundle onto the four data tabs and
+leaves the Summary tab alone, because Summary is formula-driven and recalculates
+itself.
+
+```bash
+# what would be written, without contacting Google
+python scripts/sync_sheets.py --dry-run
+
+# write it (needs a spreadsheet id and credentials)
+export SMP_SHEET_ID=1oz7edUR9ZKT-Knm7Lp90p5NsuPAhi7ytQz5GDlkfZPA
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+python scripts/sync_sheets.py --bundle data/exports/20261111_080706
+```
+
+| Tab | Filled with |
+| --- | --- |
+| `Milk Received` / `Biscuits Received` | One `Date`/`Quantity` pair per receipt, from INVENTORY RECEIVING DATA |
+| `Milk Consumption` / `Biscuit Consumption` | One column per service day, from the two CONSUMPTION tables |
+| `Summary` | Not written — its formulas read the four tabs above |
+| `RAW Milk` / `Raw Biscuits` | **Never written**; they are maintained by hand |
+
+Rows 1-7 of each tab are the header plus the six schools (in EMIS order, so row 2
+keeps Sr. No. 145); row 8 is the totals header and rows 9-14 are the per-school
+totals. Those totals are rebuilt as `=SUM(...)` over the tab's own quantity or
+date columns, so adding a receipt or a service day needs no formula editing.
+
+The mapping refuses rather than guesses. It stops with exit code 2 when the
+bundle has fewer or more than six schools, when any school is not `ok`, when any
+table is marked incomplete, or when the bundle needs more receipts or date
+columns than the tab currently has — widen the tab and re-run. Re-running on the
+same bundle is safe: the ranges are rewritten from scratch, and date columns a
+previous, wider bundle left behind are cleared.
+
+### Run it in GitHub Actions
+
+`.github/workflows/sync-sheets.yml` runs this automatically after a successful
+`SMP table extract` run, and on demand.
+
+1. Add repository secrets **`SMP_SHEET_ID`** (the workbook id from its URL) and
+   **`GOOGLE_SERVICE_ACCOUNT_JSON`** (a service-account key, pasted verbatim).
+2. Share the workbook with the service account's `client_email` as **Editor**,
+   otherwise every write fails with a 403.
+
+The key is written to a file under `$RUNNER_TEMP` (outside the workspace), is
+never echoed, and is deleted at the end of the job. `service-account*.json` is
+git-ignored so a local copy cannot be committed by accident.
+
+Because the sync writes into a Google Sheet rather than the repository, the job
+needs no write permission to this repository.
+
 ## Security and operating notes
 
 - Use this only for schools and records you are authorized to access and export under your organization’s policy.
@@ -201,4 +254,4 @@ Node and jsdom, which is what keeps the pager logic honest without signing in. I
 npm install jsdom        # or place jsdom in /tmp/jsdom/node_modules
 ```
 
-The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots), safe Excel/CSV export, CLI code-scope validation, and the export publisher used by the GitHub Actions worker (staging, index, pruning). A further set of static checks loads the workflow files and rejects expressions GitHub cannot evaluate where they are placed (for example `runner.*` inside a job's `env:`, which otherwise makes the whole workflow file invalid). They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.
+The tests cover table normalization (headers, spans, key/value rows, duplicate snapshots), safe Excel/CSV export, CLI code-scope validation, the export publisher used by the GitHub Actions worker (staging, index, pruning), and the Google Sheets mapping (`tests/test_sheet_plan.py`, `tests/test_sync_sheets.py`). The Sheets tests build a synthetic bundle, drive a fake Sheets client, and pin the mapping against the committed bundle whose totals were reconciled against the workbook — no credentials or network needed. A further set of static checks loads the workflow files and rejects expressions GitHub cannot evaluate where they are placed (for example `runner.*` inside a job's `env:`, which otherwise makes the whole workflow file invalid). They do not sign in to or exercise the live portal. The first live run should be checked against the portal's displayed table and pagination counts.
