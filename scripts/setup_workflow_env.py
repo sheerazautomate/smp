@@ -11,6 +11,10 @@ Both are restored by the workflow before this script runs. This script decides
 what still needs doing, does only that, and records timings so the next run's
 optimisation is based on measurements rather than guesswork.
 
+A restored browser cache can still be stale (for example after a Playwright
+upgrade). The launch check below repairs it in place instead of asking a human
+to delete the cache.
+
 Run it locally with ``--dry-run`` to see the plan without changing anything.
 """
 
@@ -182,11 +186,15 @@ def install_browser(plan: Plan) -> float:
     still costs seconds of startup on every run. Skipping it outright when a
     ``chromium-*`` build is present keeps a cache hit fast; ``verify_browser``
     below is what proves the cached build actually works, so a stale or partial
-    cache fails immediately instead of mid-extraction.
+    cache fails immediately instead of mid-extraction. ``main`` then repairs
+    the stale cache with ``playwright install --with-deps chromium``.
     """
     started = time.monotonic()
     if plan.browser_cached:
-        print("Chromium build already present in the cache; skipping download.")
+        print(
+            "Chromium build already present in the cache; skipping download. "
+            "The launch check below will repair a stale build."
+        )
         return time.monotonic() - started
     status = _run([sys.executable, "-m", "playwright", "install", "chromium"], plan.dry_run)
     if status != 0:
@@ -209,6 +217,31 @@ def verify_browser(plan: Plan) -> bool:
         "    browser.close()\n"
     )
     status = subprocess.call([sys.executable, "-c", script])
+    return status == 0
+
+
+def repair_browser(plan: Plan) -> bool:
+    """Reinstall the expected Chromium build and OS libraries after a bad cache.
+
+    ``playwright install --with-deps`` is idempotent: it downloads only the
+    browser revision the installed Playwright package expects and installs the
+    system libraries that are never part of the Actions browser cache.
+    """
+    if plan.dry_run:
+        print("[dry-run] playwright install --with-deps chromium")
+        return True
+    print("Repairing Chromium after a failed launch check.", flush=True)
+    status = _run(
+        [
+            sys.executable,
+            "-m",
+            "playwright",
+            "install",
+            "--with-deps",
+            "chromium",
+        ],
+        plan.dry_run,
+    )
     return status == 0
 
 
@@ -256,13 +289,25 @@ def main(argv: list[str] | None = None) -> int:
     if not plan.skip_browser:
         timings.append(("chromium", install_browser(plan)))
         if not verify_browser(plan):
-            print("::error::Chromium could not be launched after installation.", file=sys.stderr)
             print(
-                "::warning::If this was a cache hit, the browser cache is stale. "
-                "Delete the 'playwright-*' cache entries and re-run.",
+                "::warning::Chromium could not be launched. Repairing the "
+                "expected browser build and OS libraries.",
                 file=sys.stderr,
             )
-            return 1
+            started = time.monotonic()
+            repaired = repair_browser(plan)
+            timings.append(("chromium repair", time.monotonic() - started))
+            if not repaired or not verify_browser(plan):
+                print(
+                    "::error::Chromium could not be launched after reinstallation.",
+                    file=sys.stderr,
+                )
+                print(
+                    "::warning::Check the Playwright pin, the browser cache key, "
+                    "and the runner image.",
+                    file=sys.stderr,
+                )
+                return 1
         _set_output("CHROMIUM_READY", "1")
 
     total = sum(seconds for _, seconds in timings)

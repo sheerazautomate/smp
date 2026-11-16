@@ -84,6 +84,28 @@ jobs:
           # setup-python's own `cache: pip` only stores download archives and
           # still reinstalls every wheel, so the pip cache below does the work.
 
+      # The browser build is tied to the exact Playwright release. Resolve it
+      # from the pin before the cache key is evaluated so a new wheel can never
+      # restore a browser from an older release.
+      - name: Resolve the Playwright browser cache version
+        id: playwright_version
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          text = Path("requirements.txt").read_text(encoding="utf-8")
+          match = re.search(r"(?m)^\s*playwright==([^\s;#]+)\s*$", text)
+          if not match:
+              raise SystemExit(
+                  "Pin playwright==X.Y.Z in requirements.txt so the Chromium "
+                  "cache cannot be reused across Playwright releases."
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={match.group(1)}\n")
+          PY
+
       - name: Cache pip downloads and wheels
         uses: actions/cache@v5
         with:
@@ -92,25 +114,28 @@ jobs:
           restore-keys: |
             pip-${{ runner.os }}-
 
-      # Chromium is a ~170 MB download. Cache the extracted build; the key is a
-      # hash of requirements.txt, so changing the pinned Playwright version
-      # invalidates it instead of reusing an incompatible browser.
+      # Chromium is a ~170 MB download. The key includes the exact Playwright
+      # pin, so a new Playwright release cannot restore a browser build from an
+      # older release. The version is resolved from requirements.txt above.
       - name: Cache Playwright browsers
         id: browser-cache
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            playwright-${{ runner.os }}-
+            playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}-
 
       - name: Install dependencies and Chromium
         # The script skips the Chromium download when the cache filled the
-        # browsers directory, and always verifies the browser actually launches.
+        # browsers directory, always verifies the browser actually launches, and
+        # repairs a stale cache with --with-deps instead of failing the run.
         run: python scripts/setup_workflow_env.py
 
       # Chromium needs OS libraries that are *not* part of the browser download,
-      # so they are only installed when the browser cache missed.
+      # so they are only installed when the browser cache missed. The setup
+      # script performs the same repair when a restored browser fails its launch
+      # check, so a stale cache hit cannot leave the run stuck.
       # On a cache miss, `playwright install --with-deps` downloads the browser and
       # installs those libraries in one step — the same command this workflow used
       # before caching, and it needs no sudo.
@@ -218,5 +243,5 @@ jobs:
         run: |
           echo "### SMP extraction failed" >> "${GITHUB_STEP_SUMMARY}"
           echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Check the *Extract tables* step log. Nothing was committed." >> "${GITHUB_STEP_SUMMARY}"
+          echo "Check the failed step's log. Nothing was committed." >> "${GITHUB_STEP_SUMMARY}"
           echo "Common causes: missing secrets, an expired account, a changed login form, or portal rate limiting." >> "${GITHUB_STEP_SUMMARY}"
