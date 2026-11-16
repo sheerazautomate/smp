@@ -128,20 +128,23 @@ they are populated by the first run and reused from then on:
 | Cache | Path | Key | Saves |
 | --- | --- | --- | --- |
 | pip downloads and wheels | `~/.cache/pip` | hash of `requirements.txt` + the setup script | ~3 s, and far more on a cold PyPI |
-| Chromium build | `~/.cache/ms-playwright` | hash of `requirements.txt` | ~170 MB download, ~15-18 s |
+| Chromium build | `~/.cache/ms-playwright` | runner OS/arch + exact Playwright pin + hash of `requirements.txt` | ~170 MB download, ~15-18 s |
 
-The Chromium key is derived from the Playwright pin, so bumping Playwright
-invalidates the cache instead of reusing an incompatible browser. On a cache hit
-`scripts/setup_workflow_env.py` skips the download entirely, then **launches
-Chromium once** to prove the cached build works — a corrupt cache fails in setup,
-not halfway through an extraction. The OS libraries Chromium needs
-(`playwright install-deps`) are not part of the browser download, so they are only
-installed on a cache miss.
+Playwright is pinned to an exact version in `requirements.txt` because every
+release expects its own Chromium build; the cache key includes that pin, so a
+version bump cannot restore an older browser. On a cache hit
+`scripts/setup_workflow_env.py` skips the download, then **launches Chromium
+once** to prove the cached build works. If the launch fails — for example because
+a stale cache was restored or the runner image changed — the script repairs it in
+place with `playwright install --with-deps chromium` and verifies the launch again
+instead of requiring someone to delete the cache by hand. The OS libraries
+Chromium needs are not part of the browser cache, so they are installed on a
+cache miss and during any repair.
 
 Setup timings are printed at the end of the step and written to the run summary,
-so it is obvious whether a run was a hit or a miss. The test workflow
-(`checks.yml`) shares the pip cache key and uses `--skip-browser`, since the unit
-tests never launch a browser.
+so it is obvious whether a run was a hit or a miss and whether a repair happened.
+The test workflow (`checks.yml`) shares the pip cache key and uses
+`--skip-browser`, since the unit tests never launch a browser.
 
 ```bash
 # see what the workflow would do on this machine, without installing anything
@@ -150,8 +153,8 @@ python scripts/setup_workflow_env.py --dry-run
 
 ### What the worker does
 
-1. Restores the pip and Chromium caches, installs whatever is missing, runs the
-   unit tests.
+1. Resolves the pinned Playwright version, restores the pip and Chromium caches,
+   installs whatever is missing, and runs the unit tests.
 2. Runs `python -m smp_extractor --non-interactive --headless --output-dir <runner temp>`.
    The browser always runs headless on a runner; the `headless` input only matters on a
    self-hosted runner with a display.

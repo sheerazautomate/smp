@@ -1,8 +1,11 @@
 """Tests for the cache-aware dependency installer used by the workflows."""
 
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.setup_workflow_env import (
     Plan,
@@ -136,6 +139,84 @@ class PlanTests(unittest.TestCase):
         with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
             exit_code = main(["--dry-run", "--requirements", "/tmp/does-not-exist.txt"])
         self.assertEqual(exit_code, 2)
+
+
+class BrowserRepairTests(unittest.TestCase):
+    def test_repair_browser_installs_the_expected_build_and_os_libraries(self):
+        import scripts.setup_workflow_env as env
+
+        plan = Plan(
+            requirements=REQUIREMENTS,
+            browser_cached=True,
+            pip_cached=True,
+            skip_browser=False,
+            dry_run=False,
+        )
+        with mock.patch.object(env, "_run", return_value=0) as run:
+            self.assertTrue(env.repair_browser(plan))
+        run.assert_called_once_with(
+            [
+                sys.executable,
+                "-m",
+                "playwright",
+                "install",
+                "--with-deps",
+                "chromium",
+            ],
+            False,
+        )
+
+    def test_main_repairs_a_stale_browser_cache(self):
+        import contextlib
+        import io
+
+        import scripts.setup_workflow_env as env
+
+        with mock.patch.dict(
+            os.environ,
+            {"GITHUB_ENV": "", "GITHUB_STEP_SUMMARY": ""},
+            clear=False,
+        ), mock.patch.object(
+            env, "install_python_deps", return_value=0.1
+        ), mock.patch.object(
+            env, "install_browser", return_value=0.1
+        ), mock.patch.object(
+            env, "verify_browser", side_effect=[False, True]
+        ) as verify, mock.patch.object(
+            env, "repair_browser", return_value=True
+        ) as repair, mock.patch.object(env, "_set_output"):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
+                exit_code = env.main(["--requirements", str(REQUIREMENTS)])
+
+        self.assertEqual(exit_code, 0)
+        repair.assert_called_once()
+        self.assertEqual(verify.call_count, 2)
+        self.assertIn("setup timings", buffer.getvalue())
+
+    def test_main_fails_when_repair_cannot_launch_chromium(self):
+        import contextlib
+        import io
+
+        import scripts.setup_workflow_env as env
+
+        with mock.patch.dict(
+            os.environ,
+            {"GITHUB_ENV": "", "GITHUB_STEP_SUMMARY": ""},
+            clear=False,
+        ), mock.patch.object(
+            env, "install_python_deps", return_value=0.1
+        ), mock.patch.object(
+            env, "install_browser", return_value=0.1
+        ), mock.patch.object(
+            env, "verify_browser", return_value=False
+        ), mock.patch.object(
+            env, "repair_browser", return_value=True
+        ), mock.patch.object(env, "_set_output"):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                exit_code = env.main(["--requirements", str(REQUIREMENTS)])
+
+        self.assertEqual(exit_code, 1)
 
 
 if __name__ == "__main__":

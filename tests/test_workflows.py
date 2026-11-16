@@ -16,7 +16,8 @@ import re
 import unittest
 from pathlib import Path
 
-WORKFLOW_DIR = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+REPO = Path(__file__).resolve().parents[1]
+WORKFLOW_DIR = REPO / ".github" / "workflows"
 
 # Contexts that only exist once a job/step is running. None of them may be used
 # in a workflow-level ``env`` block, where GitHub evaluates expressions early.
@@ -139,7 +140,21 @@ class WorkflowFileTests(unittest.TestCase):
         browser_block = text.split("name: Cache Playwright browsers", 1)[1]
         browser_block = browser_block.split("name:", 1)[0]
         self.assertIn("hashFiles('requirements.txt')", browser_block)
+        self.assertIn("steps.playwright_version.outputs.version", browser_block)
+        self.assertIn("runner.arch", browser_block)
         self.assertIn("steps.browser-cache.outputs.cache-hit", text)
+
+    def test_playwright_is_pinned_to_an_exact_version(self):
+        """An unpinned Playwright let a new wheel reuse an old browser cache."""
+        text = (REPO / "requirements.txt").read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?m)^playwright==\d+\.\d+\.\d+\s*$")
+
+    def test_stale_browser_cache_repairs_itself(self):
+        script = (REPO / "scripts" / "setup_workflow_env.py").read_text(encoding="utf-8")
+        self.assertIn("def repair_browser", script)
+        self.assertIn("--with-deps", script)
+        self.assertIn('"chromium"', script)
+        self.assertIn("verify_browser(plan)", script)
 
     def test_workflow_actions_use_current_major_versions(self):
         """Node 20 actions were deprecated; old pins emit warnings on every run."""
@@ -211,6 +226,8 @@ class WorkflowFileTests(unittest.TestCase):
             "no step installs Chromium's system libraries",
         )
         self.assertIn("--with-deps chromium", text)
+        script = (REPO / "scripts" / "setup_workflow_env.py").read_text(encoding="utf-8")
+        self.assertIn("--with-deps", script)
 
     def test_credentials_come_from_secrets_and_are_not_echoed(self):
         path = WORKFLOW_DIR / "smp-extract.yml"
