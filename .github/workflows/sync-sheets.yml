@@ -128,6 +128,10 @@ jobs:
 
       - name: Sync the bundle into the workbook
         run: |
+          # Without pipefail, `python | tee` reports tee's exit status: a
+          # refused bundle exited 2 but this step still went green and the
+          # workbook silently stayed weeks behind.
+          set -o pipefail
           ARGS=(--json)
           if [ -n "${BUNDLE_INPUT}" ]; then
             ARGS+=(--bundle "data/exports/${BUNDLE_INPUT}")

@@ -14,8 +14,12 @@ this tool explicitly excluded them.
 The workbook's Summary tab is formula-driven, so nothing needs to be pushed
 there; it recalculates from the four tabs this script writes.
 
+Managed tabs are widened automatically when a bundle has more service days or
+receipts than the grid currently holds, up to the safety cap in sheets.plan.
+Pass ``--no-widen`` to restore the old "refuse and re-run" behaviour.
+
 Exit codes: 0 success (or nothing to do), 1 error, 2 layout refuses the data
-(the sheet needs widening before it can accept this bundle).
+(the safety cap was exceeded, or a tab was too narrow with --no-widen).
 """
 
 from __future__ import annotations
@@ -40,6 +44,14 @@ SCOPES = ("https://www.googleapis.com/auth/spreadsheets",)
 
 #: Google's batchUpdate accepts a Values.ValueRange list; keep batches modest.
 MAX_RANGES_PER_BATCH = 20
+
+
+@dataclass
+class SheetLayout:
+    """A managed tab's grid, as reported by the Sheets API."""
+
+    sheet_id: int
+    columns: int
 
 
 @dataclass
@@ -132,21 +144,85 @@ def clear_stale_tail(
     return cleared
 
 
-def sheet_sizes(service, spreadsheet_id: str) -> dict[str, int]:
-    """Column count per sheet, used to decide what the stale tail is."""
+def sheet_layouts(service, spreadsheet_id: str) -> dict[str, SheetLayout]:
+    """Read each tab's id and column count from the workbook metadata."""
     metadata = (
         service.spreadsheets()
         .get(spreadsheetId=spreadsheet_id, fields="sheets.properties")
         .execute()
     )
-    sizes: dict[str, int] = {}
+    layouts: dict[str, SheetLayout] = {}
     for sheet in metadata.get("sheets", []):
         properties = sheet.get("properties", {})
         title = properties.get("title")
         count = (properties.get("gridProperties") or {}).get("columnCount")
-        if title and count:
-            sizes[title] = int(count)
-    return sizes
+        sheet_id = properties.get("sheetId")
+        if title and count and sheet_id is not None:
+            layouts[title] = SheetLayout(sheet_id=int(sheet_id), columns=int(count))
+    return layouts
+
+
+def sheet_sizes(service, spreadsheet_id: str) -> dict[str, int]:
+    """Column count per sheet (the subset used by ``clear_stale_tail``)."""
+    return {
+        title: layout.columns
+        for title, layout in sheet_layouts(service, spreadsheet_id).items()
+    }
+
+
+def ensure_capacity(
+    service,
+    spreadsheet_id: str,
+    writes: Sequence[SheetWrite],
+    layouts: dict[str, SheetLayout],
+    *,
+    allow_widen: bool = True,
+) -> list[dict[str, Any]]:
+    """Append columns to managed tabs that cannot hold this bundle yet.
+
+    Columns are inserted at the *end* of each grid, so existing cells and the
+    formulas that reference them never move. The new columns inherit the
+    formatting of the last date/receipt column. --no-widen keeps the previous
+    refuse-to-write behaviour for operators who prefer to edit the sheet by
+    hand.
+    """
+    needed: dict[str, int] = {}
+    for write in writes:
+        needed[write.tab] = max(needed.get(write.tab, 0), write.end_column())
+
+    requests: list[dict[str, Any]] = []
+    widened: list[dict[str, Any]] = []
+    if allow_widen:
+        for tab, columns in sorted(needed.items()):
+            layout = layouts.get(tab)
+            if layout is None or columns <= layout.columns:
+                continue
+            extra = columns - layout.columns
+            requests.append(
+                {
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": layout.sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": layout.columns,
+                            "endIndex": layout.columns + extra,
+                        },
+                        "inheritFromBefore": True,
+                    }
+                }
+            )
+            widened.append(
+                {"tab": tab, "from_columns": layout.columns, "to_columns": columns}
+            )
+
+    if requests:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": requests}
+        ).execute()
+        for entry in widened:
+            layout = layouts[entry["tab"]]
+            layouts[entry["tab"]] = SheetLayout(layout.sheet_id, entry["to_columns"])
+    return widened
 
 
 def _column_name(index: int) -> str:
@@ -179,6 +255,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the ranges and exit without contacting Google Sheets.",
+    )
+    parser.add_argument(
+        "--no-widen", action="store_true",
+        help="Refuse data that needs more columns instead of adding them.",
     )
     parser.add_argument("--json", action="store_true", help="Machine-readable output.")
     args = parser.parse_args(argv)
@@ -230,7 +310,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     service = build_service(args.credentials)
-    sizes = sheet_sizes(service, args.spreadsheet_id)
+    layouts = sheet_layouts(service, args.spreadsheet_id)
+    widened = ensure_capacity(
+        service, args.spreadsheet_id, writes, layouts, allow_widen=not args.no_widen
+    )
+    sizes = {title: layout.columns for title, layout in layouts.items()}
     too_wide = [
         write for write in writes
         if write.tab in sizes and write.end_column() > sizes[write.tab]
@@ -247,7 +331,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     cleared = clear_stale_tail(service, args.spreadsheet_id, writes, sizes)
     result = write_rows(service, args.spreadsheet_id, writes)
 
-    summary = {**plan, "dry_run": False, "cleared": cleared, **result.__dict__}
+    summary = {
+        **plan,
+        "dry_run": False,
+        "widened": widened,
+        "cleared": cleared,
+        **result.__dict__,
+    }
     print(json.dumps(summary, indent=2) if args.json else _human_plan(summary))
     return 0
 
@@ -263,6 +353,11 @@ def _human_plan(payload: dict[str, Any]) -> str:
         lines.append(
             f"  {entry['tab']:<22} {entry['range']:<28} "
             f"{entry['rows']}x{entry['columns']}{suffix}"
+        )
+    for entry in payload.get("widened") or []:
+        lines.append(
+            f"  widened {entry['tab']:<16} {entry['from_columns']} -> "
+            f"{entry['to_columns']} columns"
         )
     for entry in payload.get("cleared") or []:
         lines.append(f"  cleared stale  {entry['range']}")

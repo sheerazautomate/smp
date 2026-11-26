@@ -311,6 +311,28 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("6 school rows", str(caught.exception))
 
 
+class GrowingYearTests(unittest.TestCase):
+    """A school year past 25 milk days must still produce a complete write."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+
+    def tearDown(self):
+        self._temp.cleanup()
+
+    def test_more_than_25_service_days_are_written_instead_of_refused(self):
+        bundle = make_bundle(self.root, milk_days=27, biscuit_days=9)
+        schools, _ = load_bundle(bundle)
+        writes = {write.tab: write for write in build_writes(schools)}
+        milk = writes["Milk Consumption"].values[0]
+        biscuits = writes["Biscuit Consumption"].values[0]
+        self.assertEqual(len(milk) - 5, 27)
+        self.assertEqual(len(biscuits) - 5, 9)
+        self.assertEqual(milk[-1], "2026-10-24")
+        self.assertEqual(biscuits[-1], "2026-11-26")
+
+
 @unittest.skipUnless(REAL_BUNDLE.is_dir(), "the committed export bundle is absent")
 class CommittedBundleTests(unittest.TestCase):
     """Pin the mapping against the bundle the workbook was filled from."""
