@@ -32,7 +32,7 @@ class FakeSpreadsheets:
     def __init__(self, calls, sizes):
         self._values = FakeValues(calls)
         self._calls = calls
-        self._sizes = sizes
+        self._sizes = dict(sizes)
 
     def values(self):
         return self._values
@@ -41,13 +41,26 @@ class FakeSpreadsheets:
         sheets = [
             {
                 "properties": {
+                    "sheetId": index,
                     "title": title,
                     "gridProperties": {"columnCount": count},
                 }
             }
-            for title, count in self._sizes.items()
+            for index, (title, count) in enumerate(self._sizes.items(), start=1)
         ]
         return FakeRequest({"sheets": sheets})
+
+    def batchUpdate(self, spreadsheetId, body):
+        self._calls.append(("batchUpdate", spreadsheetId, body))
+        for request in body["requests"]:
+            insert = request["insertDimension"]
+            title = next(
+                name
+                for name, index in ((n, i) for i, n in enumerate(self._sizes, start=1))
+                if index == insert["range"]["sheetId"]
+            )
+            self._sizes[title] = insert["range"]["endIndex"]
+        return FakeRequest({})
 
 
 class FakeService:
@@ -139,6 +152,45 @@ class SyncWriteTests(unittest.TestCase):
         service = FakeService(sizes)
         cleared = sync_sheets.clear_stale_tail(service, "sheet-id", writes, sizes)
         self.assertEqual(cleared, [])
+
+    def test_widening_appends_columns_without_moving_existing_cells(self):
+        """A longer school year must add columns at the right, not shift data."""
+        writes = self._writes()
+        sizes = {write.tab: write.end_column() - 2 for write in writes}
+        service = FakeService(sizes)
+        layouts = sync_sheets.sheet_layouts(service, "sheet-id")
+
+        widened = sync_sheets.ensure_capacity(service, "sheet-id", writes, layouts)
+
+        self.assertEqual(len(widened), len(writes))
+        batches = [call for call in service.calls if call[0] == "batchUpdate"]
+        self.assertEqual(len(batches), 1)
+        titles_by_id = {layout.sheet_id: title for title, layout in layouts.items()}
+        for request in batches[0][2]["requests"]:
+            insert = request["insertDimension"]
+            tab = titles_by_id[insert["range"]["sheetId"]]
+            write = next(write for write in writes if write.tab == tab)
+            self.assertEqual(insert["range"]["dimension"], "COLUMNS")
+            self.assertEqual(insert["range"]["startIndex"], sizes[tab])
+            self.assertEqual(insert["range"]["endIndex"], write.end_column())
+            self.assertTrue(insert["inheritFromBefore"])
+            self.assertEqual(layouts[tab].columns, write.end_column())
+
+    def test_no_widen_never_calls_batch_update(self):
+        writes = self._writes()
+        sizes = {write.tab: write.end_column() - 2 for write in writes}
+        service = FakeService(sizes)
+        layouts = sync_sheets.sheet_layouts(service, "sheet-id")
+
+        widened = sync_sheets.ensure_capacity(
+            service, "sheet-id", writes, layouts, allow_widen=False
+        )
+
+        self.assertEqual(widened, [])
+        self.assertFalse(any(call[0] == "batchUpdate" for call in service.calls))
+        self.assertEqual(
+            {title: layout.columns for title, layout in layouts.items()}, sizes
+        )
 
 
 class SyncCliTests(unittest.TestCase):

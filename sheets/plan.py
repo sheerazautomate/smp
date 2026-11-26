@@ -38,6 +38,11 @@ RECEIVED_PAIR = ("Date", "Quantity")
 #: Column headings used by the two "Consumption" tabs.
 CONSUMPTION_HEADERS = ("Sr. N0.", "Markaz", "EMIS", "School Name", "Enrollment")
 
+#: Upper safety limit for one-column-per-day tabs. The sync inserts columns as
+#: the school year goes on; this cap stops a runaway row count from reshaping
+#: the workbook without a human checking the mapping first.
+MAX_SERVICE_DAYS = 60
+
 #: First data row / first totals row of every block (1-based spreadsheet rows).
 FIRST_SCHOOL_ROW = 2
 TOTALS_HEADER_ROW = 8
@@ -115,9 +120,11 @@ class TabSpec:
 SHEET_SPECS: Mapping[str, TabSpec] = {
     "milk_received": TabSpec(tab="Milk Received", kind="received", capacity=32),
     "biscuits_received": TabSpec(tab="Biscuits Received", kind="received", capacity=11),
-    "milk_consumption": TabSpec(tab="Milk Consumption", kind="consumption", capacity=25),
+    "milk_consumption": TabSpec(
+        tab="Milk Consumption", kind="consumption", capacity=MAX_SERVICE_DAYS
+    ),
     "biscuit_consumption": TabSpec(
-        tab="Biscuit Consumption", kind="consumption", capacity=21
+        tab="Biscuit Consumption", kind="consumption", capacity=MAX_SERVICE_DAYS
     ),
 }
 

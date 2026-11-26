@@ -264,6 +264,19 @@ class WorkflowFileTests(unittest.TestCase):
         text = self._sync_text()
         self.assertIn("github.event.workflow_run.conclusion == 'success'", text)
 
+    def test_a_refused_bundle_fails_the_sync_step(self):
+        """`python | tee` is only as successful as python with pipefail on.
+
+        Without it the step reported success on exit code 2, leaving the
+        workbook weeks behind while every run stayed green.
+        """
+        text = self._sync_text()
+        sync_step = text.split(
+            "- name: Sync the bundle into the workbook", 1
+        )[1].split("- name:", 1)[0]
+        self.assertIn("set -o pipefail", sync_step)
+        self.assertIn("| tee sync-report.json", sync_step)
+
     def test_sync_reads_the_sheet_configuration_from_secrets(self):
         text = self._sync_text()
         self.assertIn("SMP_SHEET_ID: ${{ secrets.SMP_SHEET_ID }}", text)

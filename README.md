@@ -211,10 +211,13 @@ date columns, so adding a receipt or a service day needs no formula editing.
 
 The mapping refuses rather than guesses. It stops with exit code 2 when the
 bundle has fewer or more than six schools, when any school is not `ok`, when any
-table is marked incomplete, or when the bundle needs more receipts or date
-columns than the tab currently has — widen the tab and re-run. Re-running on the
-same bundle is safe: the ranges are rewritten from scratch, and date columns a
-previous, wider bundle left behind are cleared.
+table is marked incomplete, or when a tab would need more than 60 service days.
+For a bundle that fits those limits, the sync adds columns to the *end* of a
+managed tab when a new receipt or service day arrives, so the school year can
+grow without a manual sheet edit. Pass `--no-widen` to refuse a narrow tab
+instead; the run log reports every tab it widened. Re-running on the same bundle
+is safe: the ranges are rewritten from scratch, and date columns a previous,
+wider bundle left behind are cleared.
 
 ### Run it in GitHub Actions
 
@@ -225,6 +228,10 @@ previous, wider bundle left behind are cleared.
    **`GOOGLE_SERVICE_ACCOUNT_JSON`** (a service-account key, pasted verbatim).
 2. Share the workbook with the service account's `client_email` as **Editor**,
    otherwise every write fails with a 403.
+
+The sync step enables `pipefail` so a refused bundle (exit code 2) fails the job
+instead of being hidden by `tee`. Check the run's *Google Sheets sync* summary
+for the exact bundle, ranges, and columns added.
 
 The key is written to a file under `$RUNNER_TEMP` (outside the workspace), is
 never echoed, and is deleted at the end of the job. `service-account*.json` is
